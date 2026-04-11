@@ -1,14 +1,12 @@
 import path from 'path';
 import { promises as fs } from 'fs';
 
-import { Pool } from 'pg';
-
 import { FeeStructure, FeeInput } from '@/lib/fee';
+
+import { pool } from '@/lib/server/pg';
 
 /** Persists fee rows when DATABASE_URL is unset. Bulk upload preview never reads this file. */
 const DATA_FILE = path.join(process.cwd(), 'data', 'fee-structures.json');
-const connectionString = process.env.DATABASE_URL?.trim();
-const pool = connectionString ? new Pool({ connectionString }) : null;
 let dbReady = false;
 
 const ensureDataFile = async () => {
