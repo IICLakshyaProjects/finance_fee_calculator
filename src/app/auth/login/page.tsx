@@ -1,7 +1,6 @@
 'use client';
 
 import { FormEvent, Suspense, useState } from 'react';
-import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 function safeNextPath(raw: string | null): string {
@@ -97,11 +96,6 @@ export default function UserLoginPage() {
         <Suspense fallback={<p className="mt-6 text-sm text-slate-500">Loading…</p>}>
           <LoginForm />
         </Suspense>
-        <p className="mt-4 text-center text-sm text-slate-600">
-          <Link href="/auth/forgot-password" className="text-blue-600 hover:underline">
-            Forgot password?
-          </Link>
-        </p>
       </div>
     </div>
   );

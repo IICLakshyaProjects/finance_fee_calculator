@@ -75,6 +75,13 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  if (pathname === '/api/users' || pathname.startsWith('/api/users/')) {
+    if (!session || !isAdminRole(role)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    return NextResponse.next();
+  }
+
   if (pathname === '/') {
     if (!isUserAppRole(role)) {
       if (isAdminRole(role)) {
@@ -147,6 +154,8 @@ export const config = {
     '/auth/reset-password',
     '/api/fees',
     '/api/fees/:path*',
+    '/api/users',
+    '/api/users/:path*',
     '/api/auth/me',
   ],
 };

@@ -3,6 +3,7 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { UserManagementSection } from './user-management-section';
 import {
   calculateTotals,
   FeeInput,
@@ -619,6 +620,8 @@ export default function AdminPage() {
             Sign out
           </button>
         </header>
+
+        <UserManagementSection />
 
         <section className="space-y-6">
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
