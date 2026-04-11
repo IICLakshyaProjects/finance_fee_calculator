@@ -64,7 +64,8 @@ export type PaymentScheduleSection = 'normal' | 'otp';
 
 type PaymentScheduleFieldKey = PaymentScheduleDefinition['normalKey'] | PaymentScheduleDefinition['otpKey'];
 
-const isDerivedDefinition = (definition: PaymentScheduleDefinition) => Boolean(definition.derived);
+const isDerivedDefinition = (definition: PaymentScheduleDefinition) =>
+  'derived' in definition && Boolean(definition.derived);
 
 const getBaseDefinitions = paymentScheduleFields.filter((definition) => !isDerivedDefinition(definition));
 

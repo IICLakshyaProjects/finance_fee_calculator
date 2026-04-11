@@ -1,10 +1,11 @@
-﻿import path from 'path';
+import path from 'path';
 import { promises as fs } from 'fs';
 
 import { Pool } from 'pg';
 
 import { FeeStructure, FeeInput } from '@/lib/fee';
 
+/** Persists fee rows when DATABASE_URL is unset. Bulk upload preview never reads this file. */
 const DATA_FILE = path.join(process.cwd(), 'data', 'fee-structures.json');
 const connectionString = process.env.DATABASE_URL?.trim();
 const pool = connectionString ? new Pool({ connectionString }) : null;
@@ -216,7 +217,7 @@ export const updateFeeStructure = async (
   if (pool) {
     await ensureDb();
     const existing = await pool.query('SELECT * FROM fee_structures WHERE id = $1', [id]);
-    if (existing.rowCount === 0) {
+    if ((existing.rowCount ?? 0) === 0) {
       return null;
     }
 
@@ -267,7 +268,7 @@ export const updateFeeStructure = async (
     ];
 
     const result = await pool.query(updateSql, params);
-    return result.rowCount === 0 ? null : toEntry(result.rows[0]);
+    return (result.rowCount ?? 0) === 0 ? null : toEntry(result.rows[0]);
   }
 
   const entries = await readJsonStore();
@@ -289,7 +290,7 @@ export const deleteFeeStructure = async (id: string): Promise<boolean> => {
   if (pool) {
     await ensureDb();
     const result = await pool.query('DELETE FROM fee_structures WHERE id = $1', [id]);
-    return result.rowCount > 0;
+    return (result.rowCount ?? 0) > 0;
   }
 
   const entries = await readJsonStore();
@@ -323,8 +324,8 @@ export const bulkDeleteFeeStructures = async (ids: string[]): Promise<number> =>
 
   if (pool) {
     await ensureDb();
-    const result = await pool.query('DELETE FROM fee_structures WHERE id = ANY()', [ids]);
-    return result.rowCount;
+    const result = await pool.query('DELETE FROM fee_structures WHERE id = ANY($1::text[])', [ids]);
+    return result.rowCount ?? 0;
   }
 
   const entries = await readJsonStore();
@@ -341,7 +342,7 @@ export const deleteAllFeeStructures = async (): Promise<number> => {
   if (pool) {
     await ensureDb();
     const result = await pool.query('DELETE FROM fee_structures');
-    return result.rowCount;
+    return result.rowCount ?? 0;
   }
 
   const entries = await readJsonStore();
