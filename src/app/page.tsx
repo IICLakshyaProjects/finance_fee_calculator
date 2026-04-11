@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-/** Fallback when middleware does not run; normal flow: middleware sends users to `/home` or `/auth/login`. */
+/** Fallback when proxy does not run; normal flow: proxy sends users to `/home` or `/auth/login`. */
 export default function RootPage() {
   redirect('/home');
 }
