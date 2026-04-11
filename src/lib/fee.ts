@@ -177,3 +177,35 @@ export const calculateApplicableTotals = (
     targetTotal: safeTarget,
   };
 };
+
+/** Installment amounts aligned to the applicable fee total (rounded rupees). */
+export type ApplicablePaymentSchedule = {
+  joining: number;
+  installmentDay1: number;
+  installmentDay2: number;
+  installmentDay3: number;
+};
+
+/**
+ * Build an "applicable" payment schedule: joining and 1st installment match the normal schedule;
+ * the amount left after those is split — up to the normal 2nd installment, with any remainder as 3rd.
+ * Sum(joining, 1st, 2nd, 3rd) equals `applicableTotal` (rounded).
+ */
+export const calculateApplicablePaymentSchedule = (
+  entry: FeeInput,
+  applicableTotal: number
+): ApplicablePaymentSchedule => {
+  const T = Math.round(Math.max(0, applicableTotal));
+  const J = Math.round(Math.max(0, entry.normalJoiningAmount));
+  const I1 = Math.round(Math.max(0, entry.normalInstallmentDay1));
+  const storedSecond = Math.round(Math.max(0, entry.normalInstallmentDay30));
+  const pool = Math.max(0, T - J - I1);
+  const installmentDay2 = Math.min(storedSecond, pool);
+  const installmentDay3 = Math.max(0, pool - installmentDay2);
+  return {
+    joining: J,
+    installmentDay1: I1,
+    installmentDay2,
+    installmentDay3,
+  };
+};

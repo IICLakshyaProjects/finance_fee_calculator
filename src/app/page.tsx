@@ -3,12 +3,11 @@
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 
 import {
+  calculateApplicablePaymentSchedule,
   calculateApplicableTotals,
   calculateTotals,
   FeeStructure,
-  getScheduleValue,
   paymentScheduleFields,
-  sumPaymentSchedule,
 } from '@/lib/fee';
 
 const rupeeSymbol = '\u20B9';
@@ -30,6 +29,8 @@ export default function HomePage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'idle' | 'error'>('loading');
   const [applicableInput, setApplicableInput] = useState('');
+  const [courseComboQuery, setCourseComboQuery] = useState('');
+  const [courseComboOpen, setCourseComboOpen] = useState(false);
 
   useEffect(() => {
     let aborted = false;
@@ -67,25 +68,33 @@ export default function HomePage() {
     }
   }, [entries, selectedId]);
 
+  useEffect(() => {
+    const entry = entries.find((e) => e.id === selectedId);
+    if (entry) {
+      setCourseComboQuery(`${entry.course} · ${entry.subCourse}`);
+    } else {
+      setCourseComboQuery('');
+    }
+  }, [selectedId, entries]);
+
   const selectedEntry = entries.find((entry) => entry.id === selectedId) ?? null;
+
+  const filteredCourseEntries = useMemo(() => {
+    const q = courseComboQuery.trim().toLowerCase();
+    if (!q) {
+      return entries;
+    }
+    return entries.filter(
+      (e) =>
+        e.course.toLowerCase().includes(q) ||
+        e.subCourse.toLowerCase().includes(q) ||
+        e.particular.toLowerCase().includes(q)
+    );
+  }, [entries, courseComboQuery]);
   const totals = useMemo(
     () => (selectedEntry ? calculateTotals(selectedEntry) : null),
     [selectedEntry]
   );
-  const scheduleSums = useMemo(
-    () => ({
-      normal: selectedEntry ? sumPaymentSchedule(selectedEntry, 'normal') : 0,
-      otp: selectedEntry ? sumPaymentSchedule(selectedEntry, 'otp') : 0,
-    }),
-    [selectedEntry]
-  );
-  const scheduleChecks = totals
-    ? {
-        normal: totals.normalTotal - scheduleSums.normal,
-        otp: totals.otpTotal - scheduleSums.otp,
-      }
-    : { normal: 0, otp: 0 };
-
   const fixedFees = selectedEntry
     ? selectedEntry.admissionFee + selectedEntry.studentExpFee + selectedEntry.materialFee
     : 0;
@@ -120,6 +129,13 @@ export default function HomePage() {
     return calculateApplicableTotals(selectedEntry, totals, targetApplicableValue);
   }, [selectedEntry, totals, targetApplicableValue]);
 
+  const applicablePaymentSchedule = useMemo(() => {
+    if (!selectedEntry || !applicableTotals) {
+      return null;
+    }
+    return calculateApplicablePaymentSchedule(selectedEntry, applicableTotals.total);
+  }, [selectedEntry, applicableTotals]);
+
   const handleApplicableChange = (event: ChangeEvent<HTMLInputElement>) => {
     setApplicableInput(event.target.value);
   };
@@ -147,13 +163,36 @@ export default function HomePage() {
   }, [applicableTotals, fixedFees]);
 
   const displayApplicableTotal = applicableTotals?.total ?? totals?.normalTotal ?? 0;
-  const displayApplicableSavings = applicableTotals?.savings ?? totals?.savings ?? 0;
   const displayApplicableDiscount = applicableTotals?.discountPercent ?? totals?.discountPercent ?? 0;
   const displayOtpTotal =
     otpTotals?.total ??
     applicableTotals?.total ??
     totals?.otpTotal ??
     0;
+
+  const discountNormalToApplicable =
+    totals && applicableTotals
+      ? Math.max(0, totals.normalTotal - applicableTotals.total)
+      : 0;
+  const discountApplicableToOtp = otpTotals
+    ? otpTotals.savings
+    : Math.max(0, displayApplicableTotal - displayOtpTotal);
+  const discountTotalCourse =
+    totals != null ? Math.max(0, totals.normalTotal - displayOtpTotal) : 0;
+
+  const otpPaymentSchedule = useMemo(() => {
+    if (!selectedEntry) {
+      return null;
+    }
+    const otpTotal = displayOtpTotal;
+    // Match applicable payment schedule joining (normal joining), not otpJoiningAmount (often unset in data).
+    const joining =
+      applicablePaymentSchedule?.joining ??
+      Math.round(Math.max(0, selectedEntry.normalJoiningAmount));
+    const feeWithin7Days = Math.max(0, otpTotal - joining);
+    const check = otpTotal - joining - feeWithin7Days;
+    return { otpTotal, joining, feeWithin7Days, check };
+  }, [selectedEntry, displayOtpTotal, applicablePaymentSchedule]);
 
   const breakdownRows = selectedEntry && totals
     ? [
@@ -211,108 +250,89 @@ export default function HomePage() {
         </header>
 
         <section className="rounded-3xl border border-slate-200 bg-white/80 p-6 shadow-lg shadow-slate-200/60 backdrop-blur">
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <div className="flex flex-col gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Course selector</p>
-              <select
-                className="mt-2 w-full max-w-xs rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-base font-medium text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                value={selectedId ?? ''}
-                onChange={(event) => setSelectedId(event.target.value)}
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="relative w-full min-w-0 lg:max-w-md">
+              <label
+                htmlFor="course-search"
+                className="text-xs uppercase tracking-[0.4em] text-slate-400"
               >
-                  {entries.map((entry) => (
-                    <option key={entry.id} value={entry.id}>
-                      {entry.course} · {entry.subCourse}
-                    </option>
+                Course
+              </label>
+              <input
+                id="course-search"
+                type="text"
+                role="combobox"
+                aria-expanded={courseComboOpen}
+                aria-controls="course-options"
+                aria-autocomplete="list"
+                autoComplete="off"
+                placeholder={entries.length === 0 ? 'No courses yet' : 'Search course…'}
+                disabled={status === 'loading' || entries.length === 0}
+                value={courseComboQuery}
+                onChange={(event) => {
+                  setCourseComboQuery(event.target.value);
+                  setCourseComboOpen(true);
+                }}
+                onFocus={() => setCourseComboOpen(true)}
+                onBlur={() => {
+                  window.setTimeout(() => setCourseComboOpen(false), 180);
+                }}
+                className="mt-2 w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-base font-medium text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-60"
+              />
+              {courseComboOpen && entries.length > 0 && filteredCourseEntries.length > 0 && (
+                <ul
+                  id="course-options"
+                  role="listbox"
+                  className="absolute left-0 right-0 z-20 mt-2 max-h-60 overflow-auto rounded-2xl border border-slate-200 bg-white py-1 shadow-lg"
+                >
+                  {filteredCourseEntries.map((entry) => (
+                    <li key={entry.id} role="presentation">
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={entry.id === selectedId}
+                        className="flex w-full flex-wrap items-baseline gap-x-2 gap-y-0 px-4 py-2.5 text-left text-sm text-slate-800 hover:bg-slate-50"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setSelectedId(entry.id);
+                          setCourseComboQuery(`${entry.course} · ${entry.subCourse}`);
+                          setCourseComboOpen(false);
+                        }}
+                      >
+                        <span className="font-medium">{entry.course}</span>
+                        <span className="text-slate-500">· {entry.subCourse}</span>
+                      </button>
+                    </li>
                   ))}
-                  {entries.length === 0 && (
-                    <option value="" disabled>
-                      None available yet
-                    </option>
-                  )}
-                </select>
-              </div>
-              {selectedEntry && totals && (
-                <div className="space-y-2 text-sm text-slate-500">
-                  <label className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400">
-                    Applicable fee
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={applicableInput}
-                    onChange={handleApplicableChange}
-                    className="w-full max-w-sm rounded-2xl border border-slate-300 bg-white px-4 py-2 text-base text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  />
-                  <p className="text-xs text-slate-500">
-                    Admission, Student Experience, and Material fees stay unchanged; the remaining
-                    amount is split between tuition and GST.
-                  </p>
-                </div>
+                </ul>
+              )}
+              {courseComboOpen && entries.length > 0 && filteredCourseEntries.length === 0 && (
+                <p className="absolute left-0 right-0 z-20 mt-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-lg">
+                  No courses match your search.
+                </p>
               )}
             </div>
+
             {selectedEntry && totals && (
-              <div className="flex flex-col gap-3">
-                <div className="rounded-2xl bg-blue-50 px-4 py-3 text-slate-700">
-                  <p className="text-sm font-semibold text-slate-900">{selectedEntry.course}</p>
-                  <p className="text-sm">{selectedEntry.subCourse}</p>
-                </div>
-                <div className="rounded-2xl border border-blue-100 bg-white px-4 py-3 text-slate-700 shadow-sm">
-                  <div className="flex items-center justify-between text-xs uppercase tracking-[0.4em] text-slate-400">
-                    <span>Applicable fee</span>
-                    <span className="font-semibold text-slate-900">
-                      {formatWithSymbol(displayApplicableTotal)}
-                    </span>
-                  </div>
-                  <div className="mt-3 space-y-2 text-sm text-slate-600">
-                    {[
-                      {
-                        label: 'Coaching Fee',
-                        value: applicableTotals?.coachingFee ?? selectedEntry.otpCoachingFee,
-                      },
-                      {
-                        label: 'Admission Fee',
-                        value: selectedEntry.admissionFee,
-                      },
-                      {
-                        label: 'Student Experience Fee',
-                        value: selectedEntry.studentExpFee,
-                      },
-                      {
-                        label: 'Material Fee',
-                        value: selectedEntry.materialFee,
-                      },
-                      {
-                        label: `GST (${formatPercentLabel(selectedEntry.otpGstPercent)}%)`,
-                        value: applicableTotals?.gst ?? totals.otpGst,
-                        detail: applicableTotals
-                          ? `${formatPercentLabel(applicableTotals.gstPercent)}%`
-                          : undefined,
-                      },
-                    ].map((item) => (
-                      <div
-                        key={item.label}
-                        className="flex items-center justify-between text-slate-600"
-                      >
-                        <span>{item.label}</span>
-                        <span className="text-slate-900">
-                          {formatWithSymbol(item.value)}
-                          {item.detail && (
-                            <span className="block text-xs text-slate-500">
-                              {item.detail}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-sm font-semibold text-slate-900 mt-2">
-                    Savings: {formatWithSymbol(displayApplicableSavings)}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    {formatPercentLabel(displayApplicableDiscount)}% off vs normal total
-                  </p>
-                </div>
+              <div className="flex w-full flex-col gap-2 lg:max-w-xs lg:items-end lg:text-right">
+                <label
+                  htmlFor="applicable-fee-input"
+                  className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400"
+                >
+                  Applicable fee
+                </label>
+                <input
+                  id="applicable-fee-input"
+                  type="number"
+                  min={0}
+                  value={applicableInput}
+                  onChange={handleApplicableChange}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 lg:text-right"
+                />
+                <p className="text-xs text-slate-500 lg:max-w-sm lg:text-right">
+                  Admission, Student Experience, and Material fees stay unchanged; the remaining amount
+                  is split between tuition and GST.
+                </p>
               </div>
             )}
           </div>
@@ -386,13 +406,45 @@ export default function HomePage() {
                   </tbody>
                 </table>
                 <div className="mt-6 grid gap-4 md:grid-cols-2">
-                  {(['normal', 'otp'] as const).map((section) => {
+                  {(['applicable', 'otp'] as const).map((section) => {
                     const isOtp = section === 'otp';
                     const sectionLabel = isOtp
                       ? 'One-time payment schedule'
-                      : 'Original payment schedule';
-                    const sectionTotal = isOtp ? totals.otpTotal : totals.normalTotal;
-                    const sectionCheck = scheduleChecks[section];
+                      : 'Applicable payment schedule';
+                    const sectionTotal = isOtp
+                      ? displayOtpTotal
+                      : (applicableTotals?.total ?? totals.normalTotal);
+
+                    const applicableCheck =
+                      applicablePaymentSchedule && applicableTotals
+                        ? Math.round(applicableTotals.total) -
+                          (applicablePaymentSchedule.joining +
+                            applicablePaymentSchedule.installmentDay1 +
+                            applicablePaymentSchedule.installmentDay2 +
+                            applicablePaymentSchedule.installmentDay3)
+                        : 0;
+                    const otpScheduleCheck = otpPaymentSchedule?.check ?? 0;
+                    const sectionCheck = isOtp ? otpScheduleCheck : applicableCheck;
+
+                    const getApplicableAmount = (
+                      normalKey: (typeof paymentScheduleFields)[number]['normalKey']
+                    ) => {
+                      if (!applicablePaymentSchedule) {
+                        return 0;
+                      }
+                      switch (normalKey) {
+                        case 'normalJoiningAmount':
+                          return applicablePaymentSchedule.joining;
+                        case 'normalInstallmentDay1':
+                          return applicablePaymentSchedule.installmentDay1;
+                        case 'normalInstallmentDay30':
+                          return applicablePaymentSchedule.installmentDay2;
+                        case 'normalInstallmentDay60':
+                          return applicablePaymentSchedule.installmentDay3;
+                        default:
+                          return 0;
+                      }
+                    };
 
                     return (
                       <div
@@ -404,19 +456,34 @@ export default function HomePage() {
                           <span className="text-slate-900">{formatWithSymbol(sectionTotal)}</span>
                         </div>
                         <div className="mt-4 space-y-2 text-sm text-slate-600">
-                          {paymentScheduleFields.map((definition) => (
-                            <div
-                              key={`${section}-${definition.label}`}
-                              className="flex items-center justify-between border-b border-slate-100 pb-2 last:border-0 last:pb-0"
-                            >
-                              <span>{definition.label}</span>
-                              <span className="text-slate-900 font-semibold">
-                                {formatWithSymbol(
-                                  getScheduleValue(selectedEntry, totals, definition, section) ?? 0
-                                )}
-                              </span>
-                            </div>
-                          ))}
+                          {isOtp && otpPaymentSchedule ? (
+                            <>
+                              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                <span>Joining Amount</span>
+                                <span className="text-slate-900 font-semibold">
+                                  {formatWithSymbol(otpPaymentSchedule.joining)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between pb-2">
+                                <span>Fee within 7 days from admission</span>
+                                <span className="text-slate-900 font-semibold">
+                                  {formatWithSymbol(otpPaymentSchedule.feeWithin7Days)}
+                                </span>
+                              </div>
+                            </>
+                          ) : (
+                            paymentScheduleFields.map((definition) => (
+                              <div
+                                key={`${section}-${definition.label}`}
+                                className="flex items-center justify-between border-b border-slate-100 pb-2 last:border-0 last:pb-0"
+                              >
+                                <span>{definition.label}</span>
+                                <span className="text-slate-900 font-semibold">
+                                  {formatWithSymbol(getApplicableAmount(definition.normalKey))}
+                                </span>
+                              </div>
+                            ))
+                          )}
                         </div>
                         <div className="mt-3 flex items-center justify-between text-sm font-semibold">
                           <span>Check</span>
@@ -428,12 +495,46 @@ export default function HomePage() {
                         </div>
                         {sectionCheck !== 0 && (
                           <p className="text-xs text-rose-600">
-                            Difference between the {isOtp ? 'OTP' : 'original'} total and installment plan.
+                            {isOtp
+                              ? 'Difference between the OTP total and installment plan.'
+                              : 'Difference between the applicable total and installment plan.'}
                           </p>
                         )}
                       </div>
                     );
                   })}
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50/90 p-5 shadow-sm">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+                    Discount
+                  </h3>
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div className="flex flex-col gap-1 border-b border-slate-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="text-slate-600">
+                        Discount (normal fee → applicable fee)
+                      </span>
+                      <span className="font-semibold text-slate-900 tabular-nums">
+                        {formatWithSymbol(discountNormalToApplicable)}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 border-b border-slate-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="text-slate-600">
+                        Discount (applicable fee → OTP fee)
+                      </span>
+                      <span className="font-semibold text-slate-900 tabular-nums">
+                        {formatWithSymbol(discountApplicableToOtp)}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="font-semibold text-slate-800">
+                        Total discount (normal fee → OTP fee)
+                      </span>
+                      <span className="text-base font-bold text-emerald-700 tabular-nums">
+                        {formatWithSymbol(discountTotalCourse)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
