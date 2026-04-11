@@ -306,7 +306,7 @@ export default function HomePage() {
                   htmlFor="applicable-fee-input"
                   className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400"
                 >
-                  Applicable fee
+                  Current Total Fee
                 </label>
                 <input
                   id="applicable-fee-input"
@@ -344,7 +344,7 @@ export default function HomePage() {
                     <tr className="bg-gradient-to-r from-emerald-500 via-teal-500 to-sky-500 text-white">
                       <th className="px-4 py-3 text-left font-semibold">Particulars</th>
                       <th className="px-4 py-3 text-right font-semibold">Normal Fee</th>
-                      <th className="px-4 py-3 text-right font-semibold">Applicable Fee</th>
+                      <th className="px-4 py-3 text-right font-semibold">Current Total Fee</th>
                       <th className="px-4 py-3 text-right font-semibold">OTP Fee</th>
                     </tr>
                   </thead>
@@ -426,7 +426,7 @@ export default function HomePage() {
                                 </span>
                               </div>
                               <div className="flex items-center justify-between pb-2">
-                                <span>Fee within 7 days from admission</span>
+                                <span>Fee within 7 days from batch start</span>
                                 <span className="text-slate-900 font-semibold">
                                   {formatWithSymbol(otpPaymentSchedule.feeWithin7Days)}
                                 </span>
