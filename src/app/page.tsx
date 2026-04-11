@@ -17,12 +17,8 @@ const formatCurrency = (amount: number) =>
 
 const formatWithSymbol = (amount: number) => `${rupeeSymbol}${formatCurrency(amount)}`;
 
-const formatPercentLabel = (value?: number) => {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return '0';
-  }
-  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
-};
+const formatGstPercentLabel = (percent: number) =>
+  Number.isInteger(percent) ? `${percent}` : percent.toFixed(1);
 
 export default function HomePage() {
   const [entries, setEntries] = useState<FeeStructure[]>([]);
@@ -71,7 +67,7 @@ export default function HomePage() {
   useEffect(() => {
     const entry = entries.find((e) => e.id === selectedId);
     if (entry) {
-      setCourseComboQuery(`${entry.course} · ${entry.subCourse}`);
+      setCourseComboQuery(entry.subCourse);
     } else {
       setCourseComboQuery('');
     }
@@ -163,7 +159,6 @@ export default function HomePage() {
   }, [applicableTotals, fixedFees]);
 
   const displayApplicableTotal = applicableTotals?.total ?? totals?.normalTotal ?? 0;
-  const displayApplicableDiscount = applicableTotals?.discountPercent ?? totals?.discountPercent ?? 0;
   const displayOtpTotal =
     otpTotals?.total ??
     applicableTotals?.total ??
@@ -190,8 +185,7 @@ export default function HomePage() {
       applicablePaymentSchedule?.joining ??
       Math.round(Math.max(0, selectedEntry.normalJoiningAmount));
     const feeWithin7Days = Math.max(0, otpTotal - joining);
-    const check = otpTotal - joining - feeWithin7Days;
-    return { otpTotal, joining, feeWithin7Days, check };
+    return { otpTotal, joining, feeWithin7Days };
   }, [selectedEntry, displayOtpTotal, applicablePaymentSchedule]);
 
   const breakdownRows = selectedEntry && totals
@@ -221,16 +215,10 @@ export default function HomePage() {
           otp: selectedEntry.materialFee,
         },
         {
-          label: `GST (${formatPercentLabel(selectedEntry.gstPercent)}%)`,
+          label: `GST (${formatGstPercentLabel(selectedEntry.gstPercent)}%)`,
           normal: totals.normalGst,
           applicable: applicableTotals?.gst ?? totals.otpGst,
-          applicableLabel: applicableTotals
-            ? `${formatPercentLabel(applicableTotals.gstPercent)}%`
-            : `${formatPercentLabel(selectedEntry.otpGstPercent)}%`,
           otp: otpTotals?.gst ?? totals.otpGst,
-          otpLabel: otpTotals
-            ? `${formatPercentLabel(otpTotals.gstPercent)}%`
-            : `${formatPercentLabel(selectedEntry.otpGstPercent)}%`,
         },
       ]
     : [];
@@ -256,7 +244,7 @@ export default function HomePage() {
                 htmlFor="course-search"
                 className="text-xs uppercase tracking-[0.4em] text-slate-400"
               >
-                Course
+                Sub course
               </label>
               <input
                 id="course-search"
@@ -266,7 +254,7 @@ export default function HomePage() {
                 aria-controls="course-options"
                 aria-autocomplete="list"
                 autoComplete="off"
-                placeholder={entries.length === 0 ? 'No courses yet' : 'Search course…'}
+                placeholder={entries.length === 0 ? 'No courses yet' : 'Search sub course…'}
                 disabled={status === 'loading' || entries.length === 0}
                 value={courseComboQuery}
                 onChange={(event) => {
@@ -295,12 +283,11 @@ export default function HomePage() {
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => {
                           setSelectedId(entry.id);
-                          setCourseComboQuery(`${entry.course} · ${entry.subCourse}`);
+                          setCourseComboQuery(entry.subCourse);
                           setCourseComboOpen(false);
                         }}
                       >
-                        <span className="font-medium">{entry.course}</span>
-                        <span className="text-slate-500">· {entry.subCourse}</span>
+                        <span className="font-medium">{entry.subCourse}</span>
                       </button>
                     </li>
                   ))}
@@ -369,20 +356,10 @@ export default function HomePage() {
                           {formatWithSymbol(row.normal)}
                         </td>
                         <td className="px-4 py-2 text-right text-slate-900">
-                          <span>{formatWithSymbol(row.applicable)}</span>
-                          {row.applicableLabel && (
-                            <span className="block text-xs text-slate-500">
-                              {row.applicableLabel}
-                            </span>
-                          )}
+                          {formatWithSymbol(row.applicable)}
                         </td>
                         <td className="px-4 py-2 text-right text-slate-900">
-                          <span>{formatWithSymbol(row.otp)}</span>
-                          {row.otpLabel && (
-                            <span className="block text-xs text-slate-500">
-                              {row.otpLabel}
-                            </span>
-                          )}
+                          {formatWithSymbol(row.otp)}
                         </td>
                       </tr>
                     ))}
@@ -392,12 +369,7 @@ export default function HomePage() {
                         {formatWithSymbol(totals.normalTotal)}
                       </td>
                       <td className="px-4 py-3 text-right text-lg font-semibold">
-                        <span className="flex flex-col items-end">
-                          <span>{formatWithSymbol(displayApplicableTotal)}</span>
-                          <span className="text-xs text-slate-200">
-                            {formatPercentLabel(displayApplicableDiscount)}% off
-                          </span>
-                        </span>
+                        {formatWithSymbol(displayApplicableTotal)}
                       </td>
                       <td className="px-4 py-3 text-right text-lg font-semibold">
                         {formatWithSymbol(displayOtpTotal)}
@@ -414,17 +386,6 @@ export default function HomePage() {
                     const sectionTotal = isOtp
                       ? displayOtpTotal
                       : (applicableTotals?.total ?? totals.normalTotal);
-
-                    const applicableCheck =
-                      applicablePaymentSchedule && applicableTotals
-                        ? Math.round(applicableTotals.total) -
-                          (applicablePaymentSchedule.joining +
-                            applicablePaymentSchedule.installmentDay1 +
-                            applicablePaymentSchedule.installmentDay2 +
-                            applicablePaymentSchedule.installmentDay3)
-                        : 0;
-                    const otpScheduleCheck = otpPaymentSchedule?.check ?? 0;
-                    const sectionCheck = isOtp ? otpScheduleCheck : applicableCheck;
 
                     const getApplicableAmount = (
                       normalKey: (typeof paymentScheduleFields)[number]['normalKey']
@@ -485,21 +446,6 @@ export default function HomePage() {
                             ))
                           )}
                         </div>
-                        <div className="mt-3 flex items-center justify-between text-sm font-semibold">
-                          <span>Check</span>
-                          <span
-                            className={sectionCheck === 0 ? 'text-slate-900' : 'text-rose-600'}
-                          >
-                            {formatWithSymbol(sectionCheck)}
-                          </span>
-                        </div>
-                        {sectionCheck !== 0 && (
-                          <p className="text-xs text-rose-600">
-                            {isOtp
-                              ? 'Difference between the OTP total and installment plan.'
-                              : 'Difference between the applicable total and installment plan.'}
-                          </p>
-                        )}
                       </div>
                     );
                   })}
