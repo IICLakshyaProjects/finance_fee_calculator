@@ -3,12 +3,11 @@
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 
 import {
+  calculateApplicablePaymentSchedule,
   calculateApplicableTotals,
   calculateTotals,
   FeeStructure,
-  getScheduleValue,
   paymentScheduleFields,
-  sumPaymentSchedule,
 } from '@/lib/fee';
 
 const rupeeSymbol = '\u20B9';
@@ -72,20 +71,6 @@ export default function HomePage() {
     () => (selectedEntry ? calculateTotals(selectedEntry) : null),
     [selectedEntry]
   );
-  const scheduleSums = useMemo(
-    () => ({
-      normal: selectedEntry ? sumPaymentSchedule(selectedEntry, 'normal') : 0,
-      otp: selectedEntry ? sumPaymentSchedule(selectedEntry, 'otp') : 0,
-    }),
-    [selectedEntry]
-  );
-  const scheduleChecks = totals
-    ? {
-        normal: totals.normalTotal - scheduleSums.normal,
-        otp: totals.otpTotal - scheduleSums.otp,
-      }
-    : { normal: 0, otp: 0 };
-
   const fixedFees = selectedEntry
     ? selectedEntry.admissionFee + selectedEntry.studentExpFee + selectedEntry.materialFee
     : 0;
@@ -119,6 +104,13 @@ export default function HomePage() {
     }
     return calculateApplicableTotals(selectedEntry, totals, targetApplicableValue);
   }, [selectedEntry, totals, targetApplicableValue]);
+
+  const applicablePaymentSchedule = useMemo(() => {
+    if (!selectedEntry || !applicableTotals) {
+      return null;
+    }
+    return calculateApplicablePaymentSchedule(selectedEntry, applicableTotals.total);
+  }, [selectedEntry, applicableTotals]);
 
   const handleApplicableChange = (event: ChangeEvent<HTMLInputElement>) => {
     setApplicableInput(event.target.value);
@@ -154,6 +146,20 @@ export default function HomePage() {
     applicableTotals?.total ??
     totals?.otpTotal ??
     0;
+
+  const otpPaymentSchedule = useMemo(() => {
+    if (!selectedEntry) {
+      return null;
+    }
+    const otpTotal = displayOtpTotal;
+    // Match applicable payment schedule joining (normal joining), not otpJoiningAmount (often unset in data).
+    const joining =
+      applicablePaymentSchedule?.joining ??
+      Math.round(Math.max(0, selectedEntry.normalJoiningAmount));
+    const feeWithin7Days = Math.max(0, otpTotal - joining);
+    const check = otpTotal - joining - feeWithin7Days;
+    return { otpTotal, joining, feeWithin7Days, check };
+  }, [selectedEntry, displayOtpTotal, applicablePaymentSchedule]);
 
   const breakdownRows = selectedEntry && totals
     ? [
@@ -386,13 +392,45 @@ export default function HomePage() {
                   </tbody>
                 </table>
                 <div className="mt-6 grid gap-4 md:grid-cols-2">
-                  {(['normal', 'otp'] as const).map((section) => {
+                  {(['applicable', 'otp'] as const).map((section) => {
                     const isOtp = section === 'otp';
                     const sectionLabel = isOtp
                       ? 'One-time payment schedule'
-                      : 'Original payment schedule';
-                    const sectionTotal = isOtp ? totals.otpTotal : totals.normalTotal;
-                    const sectionCheck = scheduleChecks[section];
+                      : 'Applicable payment schedule';
+                    const sectionTotal = isOtp
+                      ? displayOtpTotal
+                      : (applicableTotals?.total ?? totals.normalTotal);
+
+                    const applicableCheck =
+                      applicablePaymentSchedule && applicableTotals
+                        ? Math.round(applicableTotals.total) -
+                          (applicablePaymentSchedule.joining +
+                            applicablePaymentSchedule.installmentDay1 +
+                            applicablePaymentSchedule.installmentDay2 +
+                            applicablePaymentSchedule.installmentDay3)
+                        : 0;
+                    const otpScheduleCheck = otpPaymentSchedule?.check ?? 0;
+                    const sectionCheck = isOtp ? otpScheduleCheck : applicableCheck;
+
+                    const getApplicableAmount = (
+                      normalKey: (typeof paymentScheduleFields)[number]['normalKey']
+                    ) => {
+                      if (!applicablePaymentSchedule) {
+                        return 0;
+                      }
+                      switch (normalKey) {
+                        case 'normalJoiningAmount':
+                          return applicablePaymentSchedule.joining;
+                        case 'normalInstallmentDay1':
+                          return applicablePaymentSchedule.installmentDay1;
+                        case 'normalInstallmentDay30':
+                          return applicablePaymentSchedule.installmentDay2;
+                        case 'normalInstallmentDay60':
+                          return applicablePaymentSchedule.installmentDay3;
+                        default:
+                          return 0;
+                      }
+                    };
 
                     return (
                       <div
@@ -404,19 +442,34 @@ export default function HomePage() {
                           <span className="text-slate-900">{formatWithSymbol(sectionTotal)}</span>
                         </div>
                         <div className="mt-4 space-y-2 text-sm text-slate-600">
-                          {paymentScheduleFields.map((definition) => (
-                            <div
-                              key={`${section}-${definition.label}`}
-                              className="flex items-center justify-between border-b border-slate-100 pb-2 last:border-0 last:pb-0"
-                            >
-                              <span>{definition.label}</span>
-                              <span className="text-slate-900 font-semibold">
-                                {formatWithSymbol(
-                                  getScheduleValue(selectedEntry, totals, definition, section) ?? 0
-                                )}
-                              </span>
-                            </div>
-                          ))}
+                          {isOtp && otpPaymentSchedule ? (
+                            <>
+                              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                <span>Joining Amount</span>
+                                <span className="text-slate-900 font-semibold">
+                                  {formatWithSymbol(otpPaymentSchedule.joining)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between pb-2">
+                                <span>Fee within 7 days from admission</span>
+                                <span className="text-slate-900 font-semibold">
+                                  {formatWithSymbol(otpPaymentSchedule.feeWithin7Days)}
+                                </span>
+                              </div>
+                            </>
+                          ) : (
+                            paymentScheduleFields.map((definition) => (
+                              <div
+                                key={`${section}-${definition.label}`}
+                                className="flex items-center justify-between border-b border-slate-100 pb-2 last:border-0 last:pb-0"
+                              >
+                                <span>{definition.label}</span>
+                                <span className="text-slate-900 font-semibold">
+                                  {formatWithSymbol(getApplicableAmount(definition.normalKey))}
+                                </span>
+                              </div>
+                            ))
+                          )}
                         </div>
                         <div className="mt-3 flex items-center justify-between text-sm font-semibold">
                           <span>Check</span>
@@ -428,7 +481,9 @@ export default function HomePage() {
                         </div>
                         {sectionCheck !== 0 && (
                           <p className="text-xs text-rose-600">
-                            Difference between the {isOtp ? 'OTP' : 'original'} total and installment plan.
+                            {isOtp
+                              ? 'Difference between the OTP total and installment plan.'
+                              : 'Difference between the applicable total and installment plan.'}
                           </p>
                         )}
                       </div>
