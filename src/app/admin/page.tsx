@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -25,6 +25,16 @@ const formatPercentLabel = (value?: number) => {
   return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
 };
 
+const formatPreviewCell = (value: unknown) => {
+  if (value === null || value === undefined || value === '') {
+    return '—';
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(value);
+  }
+  return String(value);
+};
+
 const feeFields = [
   { key: 'coachingFee', label: 'Coaching Fee' },
   { key: 'admissionFee', label: 'Admission Fee' },
@@ -32,8 +42,12 @@ const feeFields = [
   { key: 'materialFee', label: 'Material Fee' },
 ] as const;
 
-const baseScheduleFields = paymentScheduleFields.filter((definition) => !definition.derived);
-const derivedSchedule = paymentScheduleFields.find((definition) => definition.derived);
+const baseScheduleFields = paymentScheduleFields.filter(
+  (definition) => !('derived' in definition && definition.derived)
+);
+const derivedSchedule = paymentScheduleFields.find(
+  (definition) => 'derived' in definition && definition.derived === true
+);
 
 const emptyFormState: FeeInput = {
   course: '',
@@ -94,7 +108,13 @@ export default function AdminPage() {
   const [filterSubCourse, setFilterSubCourse] = useState<string>('all');
   const [bulkParsing, setBulkParsing] = useState(false);
   const [bulkSaving, setBulkSaving] = useState(false);
-  const [bulkPreviewEntries, setBulkPreviewEntries] = useState<FeeInput[]>([]);
+  /** Columns detected from the uploaded file header row (exact titles). */
+  const [bulkPreviewHeaders, setBulkPreviewHeaders] = useState<string[]>([]);
+  /** Row objects keyed by those headers — same structure as the sheet. */
+  const [bulkPreviewRawRows, setBulkPreviewRawRows] = useState<Record<string, unknown>[]>([]);
+  /** Rows that can be POSTed to /api/fees/upload when layout is Lakshya or flat. */
+  const [bulkSaveableRows, setBulkSaveableRows] = useState<FeeInput[]>([]);
+  const [bulkCanSave, setBulkCanSave] = useState(false);
   const [bulkPreviewErrors, setBulkPreviewErrors] = useState<string[]>([]);
   const [bulkPreviewSummary, setBulkPreviewSummary] = useState<string | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
@@ -102,6 +122,11 @@ export default function AdminPage() {
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
   const [deleteAllLoading, setDeleteAllLoading] = useState(false);
   const [deleteAllMessage, setDeleteAllMessage] = useState<string | null>(null);
+  const [templateDownloading, setTemplateDownloading] = useState(false);
+  /** Keeps the last chosen file so changing the worksheet tab can re-run preview without re-uploading. */
+  const bulkPendingFileRef = useRef<File | null>(null);
+  const [bulkSheetNames, setBulkSheetNames] = useState<string[]>([]);
+  const [bulkSelectedSheet, setBulkSelectedSheet] = useState('');
   const bulkFileInputRef = useRef<HTMLInputElement | null>(null);
   const isMountedRef = useRef(true);
 
@@ -227,7 +252,7 @@ export default function AdminPage() {
   };
 
   const handleBulkSave = async () => {
-    if (bulkPreviewEntries.length === 0) {
+    if (!bulkCanSave || bulkSaveableRows.length === 0) {
       return;
     }
 
@@ -241,7 +266,7 @@ export default function AdminPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ entries: bulkPreviewEntries }),
+        body: JSON.stringify({ entries: bulkSaveableRows }),
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -250,9 +275,15 @@ export default function AdminPage() {
       }
 
       setBulkSuccess(`${payload.inserted ?? 0} structures imported.`);
-      setBulkPreviewEntries([]);
+      setBulkPreviewHeaders([]);
+      setBulkPreviewRawRows([]);
+      setBulkSaveableRows([]);
+      setBulkCanSave(false);
       setBulkPreviewErrors([]);
       setBulkPreviewSummary(null);
+      setBulkSheetNames([]);
+      setBulkSelectedSheet('');
+      bulkPendingFileRef.current = null;
       await refreshEntries();
     } catch (err) {
       setBulkError(err instanceof Error ? err.message : 'Upload failed.');
@@ -293,53 +324,140 @@ export default function AdminPage() {
     }
   };
 
-  const handleBulkUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) {
-      return;
-    }
-
+  const fetchBulkPreview = useCallback(async (file: File, sheetName: string) => {
+    setBulkParsing(true);
     setBulkError(null);
     setBulkSuccess(null);
-    setBulkPreviewEntries([]);
+    setBulkPreviewHeaders([]);
+    setBulkPreviewRawRows([]);
+    setBulkSaveableRows([]);
+    setBulkCanSave(false);
     setBulkPreviewErrors([]);
     setBulkPreviewSummary(null);
-    setBulkParsing(true);
 
     try {
       const formData = new FormData();
       formData.append('file', file);
+      if (sheetName.trim().length > 0) {
+        formData.append('sheetName', sheetName.trim());
+      }
       const response = await fetch('/api/fees/upload/preview', {
         method: 'POST',
         body: formData,
       });
       const payload = await response.json();
       if (!response.ok) {
-        const details = Array.isArray(payload.errors) ? ` (${payload.errors.join('; ')})` : '';
-        throw new Error(`${payload.error ?? 'Unable to parse the file.'}${details}`);
+        const base = typeof payload.error === 'string' ? payload.error : 'Unable to parse the file.';
+        const extra =
+          Array.isArray(payload.errors) && payload.errors.length > 0 ? ` ${payload.errors.join(' ')}` : '';
+        setBulkPreviewHeaders(Array.isArray(payload.headers) ? payload.headers : []);
+        setBulkPreviewRawRows(Array.isArray(payload.rawRows) ? payload.rawRows : []);
+        setBulkSaveableRows(Array.isArray(payload.rows) ? (payload.rows as FeeInput[]) : []);
+        setBulkCanSave(Boolean(payload.canSave));
+        setBulkPreviewErrors(Array.isArray(payload.errors) ? (payload.errors as string[]) : []);
+        throw new Error(`${base}${extra}`);
       }
 
-      const rows = Array.isArray(payload.rows) ? payload.rows : [];
-      const errors = Array.isArray(payload.errors) ? payload.errors : [];
-      setBulkPreviewEntries(rows);
+      const headers = Array.isArray(payload.headers) ? (payload.headers as string[]) : [];
+      const rawRows = Array.isArray(payload.rawRows) ? (payload.rawRows as Record<string, unknown>[]) : [];
+      const saveRows = Array.isArray(payload.rows) ? (payload.rows as FeeInput[]) : [];
+      const errors = Array.isArray(payload.errors) ? (payload.errors as string[]) : [];
+      setBulkPreviewHeaders(headers);
+      setBulkPreviewRawRows(rawRows);
+      setBulkSaveableRows(saveRows);
+      setBulkCanSave(Boolean(payload.canSave));
       setBulkPreviewErrors(errors);
 
-      const validCount = rows.length;
-      const invalidCount = errors.length;
-      let summary = `${validCount} valid row${validCount === 1 ? '' : 's'}`;
-      if (invalidCount > 0) {
-        summary += `, ${invalidCount} row${invalidCount === 1 ? '' : 's'} had issues`;
+      const sheetLabel = typeof payload.sheetName === 'string' ? payload.sheetName : null;
+      const layout = typeof payload.layout === 'string' ? payload.layout : null;
+      const uploadedName = typeof payload.fileName === 'string' ? payload.fileName : file.name;
+
+      let summary = `File: ${uploadedName} — ${rawRows.length} row${rawRows.length === 1 ? '' : 's'} · ${
+        headers.length
+      } column${headers.length === 1 ? '' : 's'}`;
+      if (sheetLabel) {
+        summary += ` · tab: ${sheetLabel}`;
+      }
+      if (layout) {
+        const layoutHuman =
+          layout === 'lakshya-narrow'
+            ? 'Lakshya narrow (Course / Sub Course / Particulars / amount)'
+            : layout;
+        summary += ` · ${layoutHuman}`;
       }
       summary += '.';
+      if (saveRows.length > 0) {
+        summary += ` ${saveRows.length} course structure(s) ready to import.`;
+      } else if (layout === 'raw-only') {
+        summary +=
+          ' Import needs a wide Lakshya grid, a narrow Course/Sub Course/Particulars sheet, or flat columns.';
+      }
+      if (errors.length > 0) {
+        summary += ` Notes: ${errors.slice(0, 2).join(' ')}`;
+      }
       setBulkPreviewSummary(summary);
     } catch (err) {
       setBulkError(err instanceof Error ? err.message : 'Unable to read that file.');
     } finally {
       setBulkParsing(false);
+    }
+  }, []);
+
+  const handleDownloadTemplate = async () => {
+    setBulkError(null);
+    setTemplateDownloading(true);
+    try {
+      const response = await fetch('/api/fees/upload/template');
+      if (!response.ok) {
+        throw new Error('Could not generate the template file.');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'fee-upload-sample.xlsx';
+      anchor.rel = 'noopener';
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Template download failed.');
+    } finally {
+      setTemplateDownloading(false);
+    }
+  };
+
+  const handleBulkFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const allowed = /\.(xlsx|xls|csv)$/i.test(file.name);
+    if (!allowed) {
+      setBulkError('Invalid file type. Use .xlsx, .xls, or .csv.');
       if (bulkFileInputRef.current) {
         bulkFileInputRef.current.value = '';
       }
+      return;
+    }
+
+    bulkPendingFileRef.current = file;
+    setBulkError(null);
+    setBulkSuccess(null);
+    setBulkSheetNames([]);
+    setBulkSelectedSheet('');
+
+    try {
+      const XLSX = await import('xlsx');
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const names = workbook.SheetNames.slice();
+      setBulkSheetNames(names);
+      const firstSheet = names[0] ?? '';
+      setBulkSelectedSheet(firstSheet);
+      await fetchBulkPreview(file, firstSheet);
+    } catch {
+      setBulkError('Could not read worksheet names from this file. Try re-saving the workbook from Excel.');
+      setBulkParsing(false);
     }
   };
 
@@ -489,10 +607,11 @@ export default function AdminPage() {
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="mb-3 space-y-0.5">
               <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Bulk upload</p>
-              <h2 className="text-2xl font-semibold text-slate-900">Import fee structures via Excel</h2>
+              <h2 className="text-2xl font-semibold text-slate-900">Import fee structures via Excel or CSV</h2>
               <p className="text-sm text-slate-500">
-                Upload an .xlsx or .xls sheet with the columns shown below and the admin portal will
-                ingest the records in one go.
+                The preview shows <span className="font-medium text-slate-700">exactly the cells</span> from the
+                worksheet tab you select — nothing is injected from elsewhere. Saving to the database is only
+                available when that tab matches an import layout the server understands.
               </p>
             </div>
             <div className="grid gap-5 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)]">
@@ -501,18 +620,52 @@ export default function AdminPage() {
                   ref={bulkFileInputRef}
                   id="bulk-upload-input"
                   type="file"
-                  accept=".xlsx,.xls"
-                  onChange={handleBulkUpload}
+                  accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                  onChange={handleBulkFileChange}
                   className="hidden"
                 />
                 <label
                   htmlFor="bulk-upload-input"
-                  className="inline-flex items-center justify-center rounded-2xl border border-emerald-500 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100"
+                  className={`inline-flex items-center justify-center rounded-2xl border border-emerald-500 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100 ${
+                    bulkParsing ? 'pointer-events-none opacity-70' : 'cursor-pointer'
+                  }`}
                 >
-                  {bulkParsing ? 'Parsing file...' : 'Choose Excel file'}
+                  {bulkParsing ? 'Parsing file…' : 'Choose file'}
                 </label>
+                {bulkSheetNames.length > 0 && (
+                  <div className="space-y-1">
+                    <label htmlFor="bulk-sheet-select" className="text-xs font-semibold text-slate-600">
+                      Worksheet tab (preview uses only this tab)
+                    </label>
+                    <select
+                      id="bulk-sheet-select"
+                      value={bulkSelectedSheet}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setBulkSelectedSheet(v);
+                        const pending = bulkPendingFileRef.current;
+                        if (pending) {
+                          void fetchBulkPreview(pending, v);
+                        }
+                      }}
+                      disabled={bulkParsing}
+                      className="mt-1 w-full max-w-md rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200 disabled:opacity-60"
+                    >
+                      {bulkSheetNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-slate-500">
+                      Values and column titles always come from the file you upload. If you see columns you do not
+                      expect, switch to another tab — many workbooks include several regional layouts under different
+                      sheets.
+                    </p>
+                  </div>
+                )}
                 <p className="text-xs text-slate-500">
-                  Accepts Excel workbooks only. Each sheet row must include the required columns.
+                  Accepts .xlsx, .xls, or .csv. After upload, choose the tab that matches your fee table.
                 </p>
                 {bulkSuccess && (
                   <p className="text-sm text-emerald-600" aria-live="polite">
@@ -530,86 +683,89 @@ export default function AdminPage() {
                   Sheet guidance
                 </p>
                 <ul className="mt-3 space-y-1 text-xs leading-relaxed text-slate-600">
-                  <li>Course / Sub Course / Particular are mandatory text fields.</li>
-                  <li>Fees: Coaching, Admission, Student Experience, Material, GST %.</li>
-                  <li>OTP overrides: OTP Coaching Fee and OTP GST % (rest copied from normal).</li>
-                  <li>Payment schedule: Joining, 1st (Day 1), 2nd (Day 30) for both normal and OTP.</li>
-                  <li>3rd installment is derived automatically, so leave that column empty.</li>
+                  <li>
+                    Download pulls a slice from your project sample workbook (Lakshya file or{' '}
+                    <code className="rounded bg-slate-100 px-1">public/fee-structure-template.xlsx</code>
+                    ), not a hand-written grid.
+                  </li>
+                  <li>
+                    Wide sheets: header row must include a <span className="font-medium">course</span> column and
+                    a <span className="font-medium">Fees</span> (or fee-type) column; other columns are shown as-is.
+                  </li>
                 </ul>
-                <a
-                  href="/fee-structure-template.xlsx"
-                  download
-                  className="mt-4 inline-flex items-center text-xs font-semibold text-emerald-600 underline-offset-2 transition hover:text-emerald-500"
+                <button
+                  type="button"
+                  onClick={handleDownloadTemplate}
+                  disabled={templateDownloading}
+                  className="mt-4 inline-flex items-center rounded-xl border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Download template
-                </a>
+                  {templateDownloading ? 'Preparing…' : 'Download sample (.xlsx)'}
+                </button>
               </div>
             </div>
-            {(bulkPreviewSummary || bulkPreviewEntries.length > 0 || bulkPreviewErrors.length > 0) && (
+            {(bulkPreviewSummary ||
+              bulkPreviewRawRows.length > 0 ||
+              bulkPreviewHeaders.length > 0 ||
+              bulkPreviewErrors.length > 0) && (
               <div className="mt-5 rounded-2xl border border-slate-200 bg-white/90 p-4 text-sm text-slate-600">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-sm font-semibold text-slate-800">
                     {bulkPreviewSummary ?? 'Preview results'}
                   </p>
-                  {bulkPreviewEntries.length > 0 && (
+                  {bulkCanSave && bulkSaveableRows.length > 0 && (
                     <button
                       type="button"
                       onClick={handleBulkSave}
                       disabled={bulkSaving}
                       className="inline-flex items-center justify-center rounded-2xl border border-emerald-500 bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
                     >
-                      {bulkSaving ? 'Saving...' : 'Save previewed structures'}
+                      {bulkSaving ? 'Saving...' : `Save ${bulkSaveableRows.length} structure(s)`}
                     </button>
                   )}
                 </div>
+                {!bulkCanSave && bulkPreviewRawRows.length > 0 && (
+                  <p className="mt-2 text-xs text-amber-700">
+                    Preview only — this sheet is not in an importable layout (or no courses were parsed). Adjust
+                    columns or use a Lakshya-style or flat fee sheet to enable saving.
+                  </p>
+                )}
                 {bulkPreviewErrors.length > 0 && (
-                  <p className="text-xs text-rose-600">
-                    {bulkPreviewErrors.slice(0, 3).join('; ')}
-                    {bulkPreviewErrors.length > 3
-                      ? ` and ${bulkPreviewErrors.length - 3} more row${
-                          bulkPreviewErrors.length - 3 === 1 ? '' : 's'
-                        }`
+                  <p className="mt-2 text-xs text-rose-600">
+                    {bulkPreviewErrors.slice(0, 5).join('; ')}
+                    {bulkPreviewErrors.length > 5
+                      ? ` … (+${bulkPreviewErrors.length - 5} more)`
                       : ''}
                   </p>
                 )}
-                {bulkPreviewEntries.length > 0 && (
+                {bulkPreviewHeaders.length > 0 && bulkPreviewRawRows.length > 0 && (
                   <div className="mt-3 overflow-x-auto text-xs">
-                    <table className="min-w-full text-left text-slate-600">
+                    <table className="min-w-full border-collapse text-left text-slate-600">
                       <thead>
-                        <tr>
-                          <th className="px-3 py-2 font-semibold">Course</th>
-                          <th className="px-3 py-2 font-semibold">Sub Course</th>
-                          <th className="px-3 py-2 font-semibold">Particular</th>
-                          <th className="px-3 py-2 font-semibold">Coaching</th>
-                          <th className="px-3 py-2 font-semibold">GST</th>
-                          <th className="px-3 py-2 font-semibold">OTP Coaching</th>
-                          <th className="px-3 py-2 font-semibold">OTP GST</th>
+                        <tr className="border-b border-slate-200 bg-slate-50">
+                          {bulkPreviewHeaders.map((h) => (
+                            <th key={h} className="whitespace-nowrap px-3 py-2 font-semibold text-slate-800">
+                              {h}
+                            </th>
+                          ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {bulkPreviewEntries.slice(0, 5).map((row, index) => (
-                          <tr
-                            key={`${row.course}-${row.subCourse}-${index}`}
-                            className="border-t border-slate-100"
-                          >
-                            <td className="px-3 py-2">{row.course}</td>
-                            <td className="px-3 py-2">{row.subCourse}</td>
-                            <td className="px-3 py-2">{row.particular}</td>
-                            <td className="px-3 py-2">{formatWithSymbol(row.coachingFee)}</td>
-                            <td className="px-3 py-2">{row.gstPercent}</td>
-                            <td className="px-3 py-2">{formatWithSymbol(row.otpCoachingFee)}</td>
-                            <td className="px-3 py-2">{row.otpGstPercent}</td>
+                        {bulkPreviewRawRows.slice(0, 80).map((row, index) => (
+                          <tr key={`raw-${index}`} className="border-t border-slate-100">
+                            {bulkPreviewHeaders.map((h) => (
+                              <td key={h} className="max-w-[14rem] whitespace-pre-wrap break-words px-3 py-2">
+                                {formatPreviewCell(row[h])}
+                              </td>
+                            ))}
                           </tr>
                         ))}
-                        {bulkPreviewEntries.length > 5 && (
-                          <tr>
-                            <td colSpan={7} className="px-3 py-2 text-xs text-slate-500">
-                              Showing first 5 rows.
-                            </td>
-                          </tr>
-                        )}
                       </tbody>
                     </table>
+                    {bulkPreviewRawRows.length > 80 && (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Showing first 80 of {bulkPreviewRawRows.length} rows.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -931,29 +1087,24 @@ export default function AdminPage() {
                     <th className="px-4 py-3 text-left font-semibold">Sub Course</th>
                     <th className="px-4 py-3 text-left font-semibold">Particulars</th>
                     <th className="px-4 py-3 text-right font-semibold">Original Fees</th>
-                    <th className="px-4 py-3 text-right font-semibold">One Time Payment</th>
                   </tr>
                 </thead>
                 {filteredEntries.map((entry) => {
                   const totals = calculateTotals(entry);
                   const detailRows = [
-                    { label: 'Coaching Fee', original: entry.coachingFee, otp: entry.otpCoachingFee },
-                    { label: 'Admission Fee', original: entry.admissionFee, otp: entry.admissionFee },
+                    { label: 'Coaching Fee', original: entry.coachingFee },
+                    { label: 'Admission Fee', original: entry.admissionFee },
                     {
                       label: 'Student Experience Fee',
                       original: entry.studentExpFee,
-                      otp: entry.studentExpFee,
                     },
                     {
                       label: 'Material Fee (included)',
                       original: entry.materialFee,
-                      otp: entry.materialFee,
                     },
                     {
                       label: `GST (${formatPercentLabel(entry.gstPercent)}%)`,
                       original: totals.normalGst,
-                      otp: totals.otpGst,
-                      otpLabel: `${formatPercentLabel(entry.otpGstPercent)}%`,
                     },
                   ];
 
@@ -997,18 +1148,8 @@ export default function AdminPage() {
                         <td className="px-4 py-3 text-right text-slate-900">
                           {formatWithSymbol(totals.normalTotal)}
                         </td>
-                        <td className="px-4 py-3 text-right text-slate-900">
-                          <span className="block text-base font-semibold">
-                            {formatWithSymbol(totals.otpTotal)}
-                          </span>
-                          <span className="text-xs text-slate-500">
-                            {formatPercentLabel(totals.discountPercent)}% off
-                          </span>
-                        </td>
                       </tr>
-                    {detailRows.map((row) => {
-                      const otpValue = row.otp ?? row.original;
-                      return (
+                    {detailRows.map((row) => (
                         <tr
                           key={`${entry.id}-${row.label}`}
                           className="border-b border-slate-200 bg-slate-50"
@@ -1017,22 +1158,12 @@ export default function AdminPage() {
                           <td className="px-4 py-2 text-right text-slate-600">
                             {formatWithSymbol(row.original)}
                           </td>
-                          <td className="px-4 py-2 text-right text-slate-600">
-                            <span>{formatWithSymbol(otpValue)}</span>
-                            {row.otpLabel && (
-                              <span className="block text-xs text-slate-500">{row.otpLabel}</span>
-                            )}
-                          </td>
                         </tr>
-                      );
-                    })}
+                      ))}
                       <tr className="bg-gradient-to-r from-slate-900 to-slate-800 text-white">
                         <td className="px-4 py-3 text-lg font-semibold">Total Fees</td>
                         <td className="px-4 py-3 text-right text-lg font-semibold">
                           {formatWithSymbol(totals.normalTotal)}
-                        </td>
-                        <td className="px-4 py-3 text-right text-lg font-semibold">
-                          {formatWithSymbol(totals.otpTotal)}
                         </td>
                       </tr>
                     </tbody>
@@ -1066,7 +1197,7 @@ export default function AdminPage() {
                 <div>
                   <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Edit structure</p>
                   <p className="text-xl font-semibold text-slate-900">
-                    {modalFormState.course || 'Course'} Â· {modalFormState.subCourse || 'Sub Course'}
+                    {modalFormState.course || 'Course'} · {modalFormState.subCourse || 'Sub Course'}
                   </p>
                   <p className="text-sm text-slate-500">{modalFormState.particular || 'Particular'}</p>
                 </div>

@@ -412,7 +412,7 @@ export default function HomePage() {
                               <span>{definition.label}</span>
                               <span className="text-slate-900 font-semibold">
                                 {formatWithSymbol(
-                                  getScheduleValue(selectedEntry, definition, section) ?? 0
+                                  getScheduleValue(selectedEntry, totals, definition, section) ?? 0
                                 )}
                               </span>
                             </div>
