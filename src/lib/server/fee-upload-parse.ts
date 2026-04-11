@@ -1,6 +1,6 @@
 import { read, utils, type WorkBook, type WorkSheet } from 'xlsx';
 
-import { FeeInput } from '@/lib/fee';
+import { alignInstallmentArrays, clampInstallmentCount, DEFAULT_INSTALLMENT_DUE_DAYS, FeeInput } from '@/lib/fee';
 import { parseFeeInput } from '@/lib/server/fee-utils';
 
 export type FeeUploadParseResult = {
@@ -79,6 +79,111 @@ const normalizeColumnKey = (value: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+
+function parseDueDayCell(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.min(99999, Math.floor(value));
+  }
+  const cleaned = `${value}`.replace(/[,₹]/g, '').trim();
+  const m = cleaned.match(/(\d+)/);
+  if (m) {
+    const n = Number(m[1]);
+    return Number.isFinite(n) && n > 0 ? Math.min(99999, Math.floor(n)) : null;
+  }
+  return null;
+}
+
+/**
+ * Column headers for calendar day of each installment (labels only; amounts use normalInstallmentDay*).
+ */
+const INSTALLMENT_DUE_DAY_SLOT_KEYS: { slot: number; keys: string[] }[] = [
+  {
+    slot: 0,
+    keys: [
+      '1st_installment_due_day',
+      'first_installment_due_day',
+      'installment_1_schedule_day',
+      'installment_1_day',
+      'due_day_1st',
+    ],
+  },
+  {
+    slot: 1,
+    keys: [
+      '2nd_installment_due_day',
+      'second_installment_due_day',
+      'installment_2_schedule_day',
+      'installment_2_day',
+      'due_day_2nd',
+    ],
+  },
+  {
+    slot: 2,
+    keys: [
+      '3rd_installment_due_day',
+      'third_installment_due_day',
+      'installment_3_schedule_day',
+      'installment_3_day',
+      'due_day_3rd',
+    ],
+  },
+  {
+    slot: 3,
+    keys: [
+      '4th_installment_due_day',
+      'fourth_installment_due_day',
+      'installment_4_schedule_day',
+      'installment_4_day',
+    ],
+  },
+  {
+    slot: 4,
+    keys: [
+      '5th_installment_due_day',
+      'fifth_installment_due_day',
+      'installment_5_schedule_day',
+      'installment_5_day',
+    ],
+  },
+];
+
+function mergeInstallmentDueDaysFromNormalized(
+  normalized: Record<string, unknown>,
+  candidate: Record<string, unknown>
+) {
+  let anySet = false;
+  const merged: number[] = [...DEFAULT_INSTALLMENT_DUE_DAYS];
+  for (const { slot, keys } of INSTALLMENT_DUE_DAY_SLOT_KEYS) {
+    for (const lookup of keys) {
+      const nk = normalizeColumnKey(lookup);
+      if (Object.prototype.hasOwnProperty.call(normalized, nk)) {
+        const p = parseDueDayCell(normalized[nk]);
+        if (p != null) {
+          merged[slot] = p;
+          anySet = true;
+        }
+        break;
+      }
+    }
+  }
+  if (anySet) {
+    const caps = [
+      Math.max(0, Number(candidate.normalInstallmentDay1) || 0),
+      Math.max(0, Number(candidate.normalInstallmentDay30) || 0),
+      Math.max(0, Number(candidate.normalInstallmentDay60) || 0),
+      0,
+      0,
+    ];
+    const aligned = alignInstallmentArrays(merged, caps);
+    if (aligned && aligned.dueDays.length > 0) {
+      candidate.installmentDueDays = aligned.dueDays;
+      candidate.installmentAmountCaps = aligned.amountCaps;
+    }
+  }
+}
 
 /** Build display headers from a header row; duplicate labels become "Name (2)", etc. */
 export function makeUniqueHeaders(cells: unknown[]): string[] {
@@ -197,6 +302,8 @@ const mapRowToCandidate = (row: Record<string, unknown>): Record<string, unknown
       }
     }
   }
+
+  mergeInstallmentDueDaysFromNormalized(normalized, candidate);
 
   return candidate;
 };
@@ -547,9 +654,9 @@ export function parseNarrowTemplateLayout(
     materialFee?: number;
     gstPercent?: number;
     normalJoiningAmount?: number;
-    normalInstallmentDay1?: number;
-    normalInstallmentDay30?: number;
-    normalInstallmentDay60?: number;
+    /** Sequential installment rows from the sheet (Particulars like "1st Installment (Day 1)"). */
+    installmentAmountCaps: number[];
+    installmentDueDaysScratch: number[];
     otpTotal?: number;
   };
 
@@ -577,6 +684,16 @@ export function parseNarrowTemplateLayout(
       otpCoaching = computed > 0 ? computed : 0;
     }
 
+    const caps = currentEntry.installmentAmountCaps;
+    const days = currentEntry.installmentDueDaysScratch;
+    const aligned = alignInstallmentArrays(days, caps);
+    const ic =
+      aligned && aligned.dueDays.length >= 2
+        ? clampInstallmentCount(aligned.dueDays.length)
+        : caps.length > 0
+          ? Math.min(5, Math.max(2, caps.length))
+          : 3;
+
     entries.push({
       course: currentEntry.course,
       subCourse: currentEntry.subCourse,
@@ -589,9 +706,12 @@ export function parseNarrowTemplateLayout(
       otpCoachingFee: otpCoaching ?? currentEntry.coachingFee ?? 0,
       otpGstPercent: otpGstPercent,
       normalJoiningAmount: currentEntry.normalJoiningAmount ?? 0,
-      normalInstallmentDay1: currentEntry.normalInstallmentDay1 ?? 0,
-      normalInstallmentDay30: currentEntry.normalInstallmentDay30 ?? 0,
-      normalInstallmentDay60: currentEntry.normalInstallmentDay60 ?? 0,
+      normalInstallmentDay1: aligned?.amountCaps[0] ?? caps[0] ?? 0,
+      normalInstallmentDay30: aligned?.amountCaps[1] ?? caps[1] ?? 0,
+      normalInstallmentDay60: aligned?.amountCaps[2] ?? caps[2] ?? 0,
+      installmentAmountCaps: aligned && aligned.dueDays.length > 0 ? [...aligned.amountCaps] : undefined,
+      installmentDueDays: aligned && aligned.dueDays.length > 0 ? [...aligned.dueDays] : undefined,
+      installmentCount: ic,
       otpJoiningAmount: 0,
       otpInstallmentDay1: 0,
       otpInstallmentDay30: 0,
@@ -628,6 +748,8 @@ export function parseNarrowTemplateLayout(
         course: courseCode,
         subCourse: sub,
         particular: part || sub,
+        installmentAmountCaps: [],
+        installmentDueDaysScratch: [],
       };
       return;
     }
@@ -684,18 +806,22 @@ export function parseNarrowTemplateLayout(
       return;
     }
 
-    if (feeLabel.includes('1st installment') && amount !== null) {
-      currentEntry.normalInstallmentDay1 = amount;
-      return;
-    }
-
-    if (feeLabel.includes('2nd installment') && amount !== null) {
-      currentEntry.normalInstallmentDay30 = amount;
-      return;
-    }
-
-    if (feeLabel.includes('3rd installment') && amount !== null) {
-      currentEntry.normalInstallmentDay60 = amount;
+    // "1st Installment (Day 1)" … — require positive amount and a "(Day N)" label; no placeholders.
+    const instOrdinal = /(\d+)(st|nd|rd|th)\s+Installment/i.exec(part);
+    if (instOrdinal && feeLabel.includes('installment') && amount !== null && amount > 0) {
+      const dayM = part.match(/\(Day\s*(\d+)\)/i);
+      if (!dayM) {
+        return;
+      }
+      const d = Number(dayM[1]);
+      if (!Number.isFinite(d) || d <= 0) {
+        return;
+      }
+      if (currentEntry.installmentAmountCaps.length >= 5) {
+        return;
+      }
+      currentEntry.installmentAmountCaps.push(amount);
+      currentEntry.installmentDueDaysScratch.push(Math.min(99999, Math.floor(d)));
       return;
     }
 

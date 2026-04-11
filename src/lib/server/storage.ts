@@ -1,9 +1,74 @@
 import path from 'path';
 import { promises as fs } from 'fs';
 
-import { FeeStructure, FeeInput } from '@/lib/fee';
+import { alignInstallmentArrays, clampInstallmentCount, FeeInput, FeeStructure } from '@/lib/fee';
 
 import { pool } from '@/lib/server/pg';
+
+/**
+ * node-pg must receive plain JSON arrays for jsonb. Postgres array text `{1,2,3}` is invalid JSON
+ * and causes 22P02. Some payloads may arrive as that string or as odd array-like values.
+ */
+function coerceJsonbNumberArray(raw: unknown): number[] | null {
+  if (raw == null) {
+    return null;
+  }
+  let nums: number[] | null = null;
+  if (Array.isArray(raw)) {
+    nums = raw.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+  } else if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>;
+    const keys = Object.keys(o)
+      .filter((k) => /^\d+$/.test(k))
+      .sort((a, b) => Number(a) - Number(b));
+    if (keys.length > 0) {
+      nums = keys.map((k) => Number(o[k])).filter((n) => Number.isFinite(n));
+    }
+  } else if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (s.startsWith('{') && s.endsWith('}')) {
+      try {
+        const j = JSON.parse(s) as unknown;
+        if (Array.isArray(j)) {
+          nums = j.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+        }
+      } catch {
+        const inner = s.slice(1, -1).trim();
+        nums = inner
+          ? inner
+              .split(',')
+              .map((p) => Number(p.trim()))
+              .filter((n) => Number.isFinite(n))
+          : [];
+      }
+    } else if (s.startsWith('[')) {
+      try {
+        const j = JSON.parse(s) as unknown;
+        if (Array.isArray(j)) {
+          nums = j.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+        }
+      } catch {
+        return null;
+      }
+    }
+  }
+  if (!nums || nums.length === 0) {
+    return null;
+  }
+  return nums.slice(0, 5);
+}
+
+/** JSON text for jsonb columns — variable-length paired arrays, no zero padding. */
+function jsonbInstallmentParams(entry: FeeStructure): { dueJson: string | null; capsJson: string | null } {
+  const aligned = alignInstallmentArrays(entry.installmentDueDays, entry.installmentAmountCaps);
+  if (!aligned || aligned.dueDays.length === 0) {
+    return { dueJson: null, capsJson: null };
+  }
+  return {
+    dueJson: JSON.stringify(aligned.dueDays),
+    capsJson: JSON.stringify(aligned.amountCaps),
+  };
+}
 
 /** Persists fee rows when DATABASE_URL is unset. Bulk upload preview never reads this file. */
 const DATA_FILE = path.join(process.cwd(), 'data', 'fee-structures.json');
@@ -43,6 +108,27 @@ const readJsonStore = async (): Promise<FeeStructure[]> => {
           typeof entry.otpInstallmentDay30 === 'number' ? entry.otpInstallmentDay30 : 0,
         otpInstallmentDay60:
           typeof entry.otpInstallmentDay60 === 'number' ? entry.otpInstallmentDay60 : 0,
+        ...(() => {
+          const aligned = alignInstallmentArrays(
+            Array.isArray(entry.installmentDueDays) ? entry.installmentDueDays : undefined,
+            Array.isArray(entry.installmentAmountCaps) ? entry.installmentAmountCaps : undefined
+          );
+          const ic =
+            typeof entry.installmentCount === 'number' &&
+            entry.installmentCount >= 2 &&
+            entry.installmentCount <= 5
+              ? entry.installmentCount
+              : 3;
+          const installmentCount =
+            aligned && aligned.dueDays.length >= 2
+              ? clampInstallmentCount(aligned.dueDays.length)
+              : ic;
+          return {
+            installmentCount,
+            installmentDueDays: aligned?.dueDays,
+            installmentAmountCaps: aligned?.amountCaps,
+          };
+        })(),
       })) as FeeStructure[];
     }
   } catch {
@@ -96,11 +182,39 @@ const ensureDb = async () => {
     }
   }
 
+  await pool.query(`
+    ALTER TABLE fee_structures ADD COLUMN IF NOT EXISTS installment_count INTEGER NOT NULL DEFAULT 3
+  `);
+
+  await pool.query(`
+    ALTER TABLE fee_structures ADD COLUMN IF NOT EXISTS installment_due_days JSONB
+  `);
+
+  await pool.query(`
+    ALTER TABLE fee_structures ADD COLUMN IF NOT EXISTS installment_amount_caps JSONB
+  `);
+
   dbReady = true;
 };
 
 const toNumberValue = (value: unknown) =>
   value === null || value === undefined ? 0 : Number(value) || 0;
+
+const readInstallmentFieldsFromRow = (row: Record<string, unknown>) => {
+  const dueRaw = coerceJsonbNumberArray(row.installment_due_days);
+  const capRaw = coerceJsonbNumberArray(row.installment_amount_caps);
+  const aligned = alignInstallmentArrays(dueRaw ?? undefined, capRaw ?? undefined);
+  const dbCount = Math.floor(toNumberValue(row.installment_count));
+  let installmentCount = dbCount >= 2 && dbCount <= 5 ? dbCount : 3;
+  if (aligned && aligned.dueDays.length >= 2) {
+    installmentCount = clampInstallmentCount(aligned.dueDays.length);
+  }
+  return {
+    installmentCount,
+    installmentDueDays: aligned?.dueDays,
+    installmentAmountCaps: aligned?.amountCaps,
+  };
+};
 
 const toEntry = (row: Record<string, unknown>): FeeStructure => ({
   id: String(row.id),
@@ -122,6 +236,7 @@ const toEntry = (row: Record<string, unknown>): FeeStructure => ({
   otpInstallmentDay1: toNumberValue(row.otp_installment_day1),
   otpInstallmentDay30: toNumberValue(row.otp_installment_day30),
   otpInstallmentDay60: toNumberValue(row.otp_installment_day60),
+  ...readInstallmentFieldsFromRow(row),
   createdAt:
     row.created_at instanceof Date
       ? row.created_at.toISOString()
@@ -130,6 +245,12 @@ const toEntry = (row: Record<string, unknown>): FeeStructure => ({
 
 const toParams = (entry: FeeStructure) => {
   const createdAt = entry.createdAt || new Date().toISOString();
+  const aligned = alignInstallmentArrays(entry.installmentDueDays, entry.installmentAmountCaps);
+  const installmentCount =
+    aligned && aligned.dueDays.length >= 2
+      ? clampInstallmentCount(aligned.dueDays.length)
+      : entry.installmentCount ?? 3;
+  const { dueJson, capsJson } = jsonbInstallmentParams(entry);
   return [
     entry.id,
     entry.course,
@@ -150,6 +271,9 @@ const toParams = (entry: FeeStructure) => {
     entry.otpInstallmentDay1,
     entry.otpInstallmentDay30,
     entry.otpInstallmentDay60,
+    installmentCount,
+    dueJson,
+    capsJson,
     createdAt,
   ];
 };
@@ -159,10 +283,11 @@ const insertSql = `
     id, course, sub_course, particular, coaching_fee, admission_fee, student_exp_fee, material_fee,
     gst_percent, otp_coaching_fee, otp_gst_percent, normal_joining_amount, normal_installment_day1,
     normal_installment_day30, normal_installment_day60, otp_joining_amount, otp_installment_day1,
-    otp_installment_day30, otp_installment_day60, created_at
+    otp_installment_day30, otp_installment_day60, installment_count, installment_due_days,
+    installment_amount_caps, created_at
   ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22::jsonb, $23
   )
 `;
 
@@ -219,6 +344,20 @@ export const updateFeeStructure = async (
       return null;
     }
 
+    const prev = toEntry(existing.rows[0] as Record<string, unknown>);
+    const merged: FeeStructure = {
+      ...prev,
+      ...data,
+      id: prev.id,
+      createdAt: prev.createdAt,
+    };
+    const aligned = alignInstallmentArrays(merged.installmentDueDays, merged.installmentAmountCaps);
+    const installmentCount =
+      aligned && aligned.dueDays.length >= 2
+        ? clampInstallmentCount(aligned.dueDays.length)
+        : data.installmentCount ?? prev.installmentCount ?? 3;
+    const { dueJson, capsJson } = jsonbInstallmentParams(merged);
+
     const updateSql = `
       UPDATE fee_structures SET
         course = $1,
@@ -238,8 +377,11 @@ export const updateFeeStructure = async (
         otp_joining_amount = $15,
         otp_installment_day1 = $16,
         otp_installment_day30 = $17,
-        otp_installment_day60 = $18
-      WHERE id = $19
+        otp_installment_day60 = $18,
+        installment_count = $19,
+        installment_due_days = $20::jsonb,
+        installment_amount_caps = $21::jsonb
+      WHERE id = $22
       RETURNING *
     `;
 
@@ -262,6 +404,9 @@ export const updateFeeStructure = async (
       data.otpInstallmentDay1,
       data.otpInstallmentDay30,
       data.otpInstallmentDay60,
+      installmentCount,
+      dueJson,
+      capsJson,
       id,
     ];
 

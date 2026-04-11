@@ -1,4 +1,4 @@
-import { FeeInput } from '@/lib/fee';
+import { alignInstallmentArrays, clampInstallmentCount, FeeInput } from '@/lib/fee';
 
 const sanitizeNumber = (value: unknown): number | null => {
   if (typeof value === 'number') {
@@ -47,6 +47,36 @@ export const parseFeeInput = (payload: unknown): FeeInput | null => {
   const otpInstallmentDay1 = sanitizeNumber(candidate.otpInstallmentDay1);
   const otpInstallmentDay30 = sanitizeNumber(candidate.otpInstallmentDay30);
   const otpInstallmentDay60 = sanitizeNumber(candidate.otpInstallmentDay60);
+  const installmentCountRaw = sanitizeNumber(candidate.installmentCount);
+
+  const parallelDueDays = (value: unknown): number[] | undefined => {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const out: number[] = [];
+    for (const item of value.slice(0, 5)) {
+      const n = sanitizeNumber(item);
+      out.push(n !== null && n >= 1 ? Math.min(99999, Math.floor(n)) : 0);
+    }
+    return out;
+  };
+
+  const parallelAmountCaps = (value: unknown): number[] | undefined => {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const out: number[] = [];
+    for (const item of value.slice(0, 5)) {
+      const n = sanitizeNumber(item);
+      out.push(n !== null ? Math.max(0, Math.min(1e12, n)) : 0);
+    }
+    return out;
+  };
+
+  const aligned = alignInstallmentArrays(
+    parallelDueDays(candidate.installmentDueDays),
+    parallelAmountCaps(candidate.installmentAmountCaps)
+  );
 
   if (
     coachingFee === null ||
@@ -61,6 +91,13 @@ export const parseFeeInput = (payload: unknown): FeeInput | null => {
   }
 
   const gstPercent = Math.max(0, gstPercentRaw);
+  const ic =
+    aligned && aligned.dueDays.length >= 2
+      ? clampInstallmentCount(aligned.dueDays.length)
+      : installmentCountRaw != null && installmentCountRaw >= 2 && installmentCountRaw <= 5
+        ? Math.floor(installmentCountRaw)
+        : 3;
+
   return {
     course,
     subCourse,
@@ -80,6 +117,10 @@ export const parseFeeInput = (payload: unknown): FeeInput | null => {
     otpInstallmentDay1: Math.max(0, otpInstallmentDay1 ?? 0),
     otpInstallmentDay30: Math.max(0, otpInstallmentDay30 ?? 0),
     otpInstallmentDay60: Math.max(0, otpInstallmentDay60 ?? 0),
+    installmentCount: ic,
+    ...(aligned && aligned.dueDays.length > 0
+      ? { installmentDueDays: aligned.dueDays, installmentAmountCaps: aligned.amountCaps }
+      : {}),
   };
 };
 

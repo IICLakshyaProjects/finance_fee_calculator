@@ -8,7 +8,8 @@ import {
   calculateApplicableTotals,
   calculateTotals,
   FeeStructure,
-  paymentScheduleFields,
+  getApplicablePaymentScheduleRows,
+  normalizeFeeStructureFromApi,
 } from '@/lib/fee';
 
 const rupeeSymbol = '\u20B9';
@@ -35,11 +36,17 @@ export default function HomePage() {
 
     const fetchData = async () => {
       try {
-        const response = await fetch('/api/fees', { credentials: 'include' });
+        const response = await fetch('/api/fees', {
+          credentials: 'include',
+          cache: 'no-store',
+        });
         if (!response.ok) {
           throw new Error('Failed to load');
         }
-        const data = (await response.json()) as FeeStructure[];
+        const raw = (await response.json()) as unknown[];
+        const data = Array.isArray(raw)
+          ? raw.map(normalizeFeeStructureFromApi).filter((e): e is FeeStructure => e != null)
+          : [];
         if (!aborted) {
           setEntries(data);
           setStatus('idle');
@@ -189,6 +196,13 @@ export default function HomePage() {
     const feeWithin7Days = Math.max(0, otpTotal - joining);
     return { otpTotal, joining, feeWithin7Days };
   }, [selectedEntry, displayOtpTotal, applicablePaymentSchedule]);
+
+  const applicableScheduleRows = useMemo(() => {
+    if (!applicablePaymentSchedule || !selectedEntry) {
+      return [];
+    }
+    return getApplicablePaymentScheduleRows(applicablePaymentSchedule, selectedEntry);
+  }, [applicablePaymentSchedule, selectedEntry]);
 
   const breakdownRows = selectedEntry && totals
     ? [
@@ -397,26 +411,6 @@ export default function HomePage() {
                       ? displayOtpTotal
                       : (applicableTotals?.total ?? totals.normalTotal);
 
-                    const getApplicableAmount = (
-                      normalKey: (typeof paymentScheduleFields)[number]['normalKey']
-                    ) => {
-                      if (!applicablePaymentSchedule) {
-                        return 0;
-                      }
-                      switch (normalKey) {
-                        case 'normalJoiningAmount':
-                          return applicablePaymentSchedule.joining;
-                        case 'normalInstallmentDay1':
-                          return applicablePaymentSchedule.installmentDay1;
-                        case 'normalInstallmentDay30':
-                          return applicablePaymentSchedule.installmentDay2;
-                        case 'normalInstallmentDay60':
-                          return applicablePaymentSchedule.installmentDay3;
-                        default:
-                          return 0;
-                      }
-                    };
-
                     return (
                       <div
                         key={section}
@@ -443,14 +437,14 @@ export default function HomePage() {
                               </div>
                             </>
                           ) : (
-                            paymentScheduleFields.map((definition) => (
+                            applicableScheduleRows.map((row) => (
                               <div
-                                key={`${section}-${definition.label}`}
+                                key={`${section}-${row.label}`}
                                 className="flex items-center justify-between border-b border-slate-100 pb-2 last:border-0 last:pb-0"
                               >
-                                <span>{definition.label}</span>
+                                <span>{row.label}</span>
                                 <span className="text-slate-900 font-semibold">
-                                  {formatWithSymbol(getApplicableAmount(definition.normalKey))}
+                                  {formatWithSymbol(row.amount)}
                                 </span>
                               </div>
                             ))
