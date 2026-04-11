@@ -1,12 +1,10 @@
 import { NextResponse } from 'next/server';
 
+import { getAppOrigin } from '@/lib/auth/app-url';
 import { findUserByEmail, savePasswordResetToken, generateRawResetToken, hashResetToken } from '@/lib/server/users';
+import { isSmtpConfigured, sendPasswordResetEmail } from '@/lib/server/mail';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function appOrigin() {
-  return process.env.NEXT_PUBLIC_APP_URL?.trim() || 'http://localhost:3000';
-}
 
 export async function POST(request: Request) {
   let body: unknown;
@@ -39,10 +37,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  const link = `${appOrigin().replace(/\/$/, '')}/auth/reset-password?token=${encodeURIComponent(raw)}`;
+  const link = `${getAppOrigin()}/auth/reset-password?token=${encodeURIComponent(raw)}`;
 
-  if (process.env.NODE_ENV === 'development') {
-    console.info('[dev] Password reset link:', link);
+  if (isSmtpConfigured()) {
+    try {
+      await sendPasswordResetEmail({ to: user.email, resetUrl: link });
+    } catch (e) {
+      console.error('[forgot-password] SMTP', e);
+    }
+  } else if (process.env.NODE_ENV === 'development') {
+    console.info('[dev] Password reset link (SMTP not configured):', link);
   }
 
   return NextResponse.json({

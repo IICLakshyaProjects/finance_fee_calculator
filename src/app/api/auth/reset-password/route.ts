@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 
 import { hashPassword } from '@/lib/auth/password';
-import { consumePasswordResetToken, updateUserPassword } from '@/lib/server/users';
+import type { UserRole } from '@/lib/auth/types';
+import { consumePasswordResetToken, findUserById, updateUserPassword } from '@/lib/server/users';
 
 export async function POST(request: Request) {
   let body: unknown;
@@ -27,8 +28,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid or expired reset link' }, { status: 400 });
   }
 
+  const existing = await findUserById(consumed.userId);
+  const role = (existing?.role ?? 'USER') as UserRole;
+
   const hash = await hashPassword(password);
   await updateUserPassword(consumed.userId, hash);
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, role });
 }

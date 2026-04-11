@@ -1,13 +1,26 @@
 'use client';
 
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChangeEvent,
+  Dispatch,
+  SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useRouter } from 'next/navigation';
 
 import { UserManagementSection } from './user-management-section';
 import {
   calculateTotals,
+  clampInstallmentCount,
+  DEFAULT_INSTALLMENT_DUE_DAYS,
   FeeInput,
   FeeStructure,
+  getInstallmentDueDay,
+  getPaymentScheduleRowLabel,
   paymentScheduleFields,
   preparePaymentState,
   sumPaymentSchedule,
@@ -70,6 +83,28 @@ const emptyFormState: FeeInput = {
   otpInstallmentDay1: 0,
   otpInstallmentDay30: 0,
   otpInstallmentDay60: 0,
+  installmentCount: 3,
+  installmentDueDays: undefined,
+  installmentAmountCaps: undefined,
+};
+
+/** Keep legacy amount fields and per-count caps aligned when saving after edits (no fixed length-5 padding). */
+const mergeInstallmentCapsWithLegacyFields = (s: FeeInput): FeeInput => {
+  const ic = clampInstallmentCount(s.installmentCount ?? 3);
+  const base = [...(s.installmentAmountCaps ?? [])];
+  while (base.length < ic) {
+    base.push(0);
+  }
+  if (ic >= 1) {
+    base[0] = s.normalInstallmentDay1;
+  }
+  if (ic >= 2) {
+    base[1] = s.normalInstallmentDay30;
+  }
+  if (ic >= 3) {
+    base[2] = s.normalInstallmentDay60;
+  }
+  return { ...s, installmentAmountCaps: base.slice(0, ic) };
 };
 
 const entryToFormState = (entry: FeeStructure): FeeInput => ({
@@ -84,13 +119,16 @@ const entryToFormState = (entry: FeeStructure): FeeInput => ({
   otpCoachingFee: entry.otpCoachingFee,
   otpGstPercent: entry.otpGstPercent,
   normalJoiningAmount: entry.normalJoiningAmount,
-  normalInstallmentDay1: entry.normalInstallmentDay1,
-  normalInstallmentDay30: entry.normalInstallmentDay30,
-  normalInstallmentDay60: entry.normalInstallmentDay60,
+  normalInstallmentDay1: entry.installmentAmountCaps?.[0] ?? entry.normalInstallmentDay1,
+  normalInstallmentDay30: entry.installmentAmountCaps?.[1] ?? entry.normalInstallmentDay30,
+  normalInstallmentDay60: entry.installmentAmountCaps?.[2] ?? entry.normalInstallmentDay60,
   otpJoiningAmount: entry.otpJoiningAmount,
   otpInstallmentDay1: entry.otpInstallmentDay1,
   otpInstallmentDay30: entry.otpInstallmentDay30,
   otpInstallmentDay60: entry.otpInstallmentDay60,
+  installmentCount: entry.installmentCount ?? 3,
+  installmentDueDays: entry.installmentDueDays,
+  installmentAmountCaps: entry.installmentAmountCaps,
 });
 
 export default function AdminPage() {
@@ -253,6 +291,25 @@ export default function AdminPage() {
   ) => {
     setModalFormState((prev) => ({ ...prev, [field]: event.target.value }));
   };
+
+  const patchInstallmentDueDay =
+    (setter: Dispatch<SetStateAction<FeeInput>>, slotIndex: number) =>
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const value = Number(event.target.value);
+      const nextDay =
+        Number.isFinite(value) && value > 0
+          ? Math.min(99999, Math.floor(value))
+          : DEFAULT_INSTALLMENT_DUE_DAYS[slotIndex];
+      setter((prev) => {
+        const ic = clampInstallmentCount(prev.installmentCount ?? 3);
+        const base: number[] = [];
+        for (let i = 0; i < ic; i++) {
+          base[i] = prev.installmentDueDays?.[i] ?? DEFAULT_INSTALLMENT_DUE_DAYS[i];
+        }
+        base[slotIndex] = nextDay;
+        return { ...prev, installmentDueDays: base };
+      });
+    };
 
   const handleBulkSave = async () => {
     if (!bulkCanSave || bulkSaveableRows.length === 0) {
@@ -492,7 +549,7 @@ export default function AdminPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(formState),
+        body: JSON.stringify(mergeInstallmentCapsWithLegacyFields(formState)),
       });
 
       if (!response.ok) {
@@ -535,7 +592,7 @@ export default function AdminPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(modalFormState),
+        body: JSON.stringify(mergeInstallmentCapsWithLegacyFields(modalFormState)),
       });
 
       if (!response.ok) {
@@ -615,7 +672,7 @@ export default function AdminPage() {
           <button
             type="button"
             onClick={handleLogout}
-            className="shrink-0 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            className="shrink-0 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-red-700 hover:bg-slate-50"
           >
             Sign out
           </button>
@@ -882,18 +939,59 @@ export default function AdminPage() {
                   <p className="text-sm font-semibold uppercase tracking-[0.3em] text-slate-500">
                     Normal payment schedule
                   </p>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    {baseScheduleFields.map(({ normalKey, label }) => (
+                  <label className="block space-y-1 text-sm font-medium text-slate-700">
+                    Installments on fee calculator (applicable schedule)
+                    <select
+                      value={formState.installmentCount ?? 3}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setFormState((prev) => ({
+                          ...prev,
+                          installmentCount: v >= 2 && v <= 5 ? v : 3,
+                        }));
+                      }}
+                      className="w-full max-w-xs rounded-2xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                    >
+                      {[2, 3, 4, 5].map((n) => (
+                        <option key={n} value={n}>
+                          {n} installments
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 sm:gap-3">
+                    {Array.from({ length: formState.installmentCount ?? 3 }, (_, slotIndex) => (
                       <label
-                        key={`normal-${normalKey}`}
+                        key={`due-create-${slotIndex}`}
+                        className="space-y-1 text-xs font-medium text-slate-600"
+                      >
+                        Due day (installment {slotIndex + 1})
+                        <input
+                          type="number"
+                          min={1}
+                          value={getInstallmentDueDay(formState, slotIndex)}
+                          onChange={patchInstallmentDueDay(setFormState, slotIndex)}
+                          className="w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    These numbers appear in installment labels (fee calculator and payment schedules). Defaults
+                    are 1, 30, 60, 90, and 120 when left unchanged.
+                  </p>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {baseScheduleFields.map((def) => (
+                      <label
+                        key={`normal-${def.normalKey}`}
                         className="space-y-1 text-sm font-medium text-slate-700"
                       >
-                        {label}
+                        {getPaymentScheduleRowLabel(formState, def)}
                         <input
                           type="number"
                           min={0}
-                          value={formState[normalKey]}
-                          onChange={handleNumericChange(normalKey)}
+                          value={formState[def.normalKey]}
+                          onChange={handleNumericChange(def.normalKey)}
                           className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                         />
                       </label>
@@ -912,13 +1010,19 @@ export default function AdminPage() {
                   </p>
                   <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 text-sm text-slate-600">
                     <div className="flex items-center justify-between text-slate-700">
-                      <span>{derivedSchedule?.label}</span>
+                      <span>
+                        {derivedSchedule
+                          ? getPaymentScheduleRowLabel(formState, derivedSchedule)
+                          : ''}
+                      </span>
                       <span className="font-semibold text-slate-900">
                         {formatWithSymbol(derivedFormState.normalInstallmentDay60)}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-2">
-                      {derivedSchedule?.label} = Total ({formatWithSymbol(liveTotals.normalTotal)}) - (Joining + 1st + 2nd)
+                      {derivedSchedule
+                        ? `${getPaymentScheduleRowLabel(formState, derivedSchedule)} = Total (${formatWithSymbol(liveTotals.normalTotal)}) - (Joining + 1st + 2nd)`
+                        : ''}
                     </p>
                   </div>
                 </div>
@@ -977,17 +1081,17 @@ export default function AdminPage() {
                     OTP payment schedule
                   </p>
                   <div className="grid gap-4 md:grid-cols-2">
-                    {baseScheduleFields.map(({ otpKey, label }) => (
+                    {baseScheduleFields.map((def) => (
                       <label
-                        key={`otp-${otpKey}`}
+                        key={`otp-${def.otpKey}`}
                         className="space-y-1 text-sm font-medium text-slate-700"
                       >
-                        {label}
+                        {getPaymentScheduleRowLabel(formState, def)}
                         <input
                           type="number"
                           min={0}
-                          value={formState[otpKey]}
-                          onChange={handleNumericChange(otpKey)}
+                          value={formState[def.otpKey]}
+                          onChange={handleNumericChange(def.otpKey)}
                           className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                         />
                       </label>
@@ -1006,13 +1110,19 @@ export default function AdminPage() {
                   </p>
                   <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 text-sm text-slate-600">
                     <div className="flex items-center justify-between text-slate-700">
-                      <span>{derivedSchedule?.label}</span>
+                      <span>
+                        {derivedSchedule
+                          ? getPaymentScheduleRowLabel(formState, derivedSchedule)
+                          : ''}
+                      </span>
                       <span className="font-semibold text-slate-900">
                         {formatWithSymbol(derivedFormState.otpInstallmentDay60)}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-2">
-                      {derivedSchedule?.label} = Total ({formatWithSymbol(liveTotals.otpTotal)}) - (Joining + 1st + 2nd)
+                      {derivedSchedule
+                        ? `${getPaymentScheduleRowLabel(formState, derivedSchedule)} = Total (${formatWithSymbol(liveTotals.otpTotal)}) - (Joining + 1st + 2nd)`
+                        : ''}
                     </p>
                   </div>
                 </div>
@@ -1309,18 +1419,58 @@ export default function AdminPage() {
                     <p className="text-sm font-semibold uppercase tracking-[0.3em] text-slate-500">
                       Normal payment schedule
                     </p>
+                    <label className="block space-y-1 text-sm font-medium text-slate-700">
+                      Installments on fee calculator (applicable schedule)
+                      <select
+                        value={modalFormState.installmentCount ?? 3}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setModalFormState((prev) => ({
+                            ...prev,
+                            installmentCount: v >= 2 && v <= 5 ? v : 3,
+                          }));
+                        }}
+                        className="w-full max-w-xs rounded-2xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                      >
+                        {[2, 3, 4, 5].map((n) => (
+                          <option key={n} value={n}>
+                            {n} installments
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 sm:gap-3">
+                    {Array.from({ length: modalFormState.installmentCount ?? 3 }, (_, slotIndex) => (
+                      <label
+                        key={`due-modal-${slotIndex}`}
+                          className="space-y-1 text-xs font-medium text-slate-600"
+                        >
+                          Due day (installment {slotIndex + 1})
+                          <input
+                            type="number"
+                            min={1}
+                            value={getInstallmentDueDay(modalFormState, slotIndex)}
+                            onChange={patchInstallmentDueDay(setModalFormState, slotIndex)}
+                            className="w-full rounded-xl border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Shown in installment labels. Defaults: 1, 30, 60, 90, 120.
+                    </p>
                   <div className="grid gap-4 md:grid-cols-2">
-                    {baseScheduleFields.map(({ normalKey, label }) => (
+                    {baseScheduleFields.map((def) => (
                         <label
-                          key={`modal-normal-${normalKey}`}
+                          key={`modal-normal-${def.normalKey}`}
                           className="space-y-1 text-sm font-medium text-slate-700"
                         >
-                          {label}
+                          {getPaymentScheduleRowLabel(modalFormState, def)}
                           <input
                             type="number"
                             min={0}
-                            value={modalFormState[normalKey]}
-                            onChange={handleModalNumericChange(normalKey)}
+                            value={modalFormState[def.normalKey]}
+                            onChange={handleModalNumericChange(def.normalKey)}
                             className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                           />
                         </label>
@@ -1388,17 +1538,17 @@ export default function AdminPage() {
                       OTP payment schedule
                     </p>
                     <div className="grid gap-4 md:grid-cols-2">
-                      {paymentScheduleFields.map(({ otpKey, label }) => (
+                      {paymentScheduleFields.map((def) => (
                         <label
-                          key={`modal-otp-${otpKey}`}
+                          key={`modal-otp-${def.otpKey}`}
                           className="space-y-1 text-sm font-medium text-slate-700"
                         >
-                          {label}
+                          {getPaymentScheduleRowLabel(modalFormState, def)}
                           <input
                             type="number"
                             min={0}
-                            value={modalFormState[otpKey]}
-                            onChange={handleModalNumericChange(otpKey)}
+                            value={modalFormState[def.otpKey]}
+                            onChange={handleModalNumericChange(def.otpKey)}
                             className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                           />
                         </label>

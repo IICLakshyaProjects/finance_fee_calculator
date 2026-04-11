@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { requireAdminSession } from '@/lib/auth/require-admin-api';
 import { hashPassword } from '@/lib/auth/password';
 import type { UserRole } from '@/lib/auth/types';
-import { softDeleteUserById, updateUserById } from '@/lib/server/users';
+import { deleteUserById, updateUserById } from '@/lib/server/users';
 
 const ROLES: UserRole[] = ['USER', 'SUB_ADMIN', 'ADMIN', 'SUPER_ADMIN'];
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -99,7 +99,7 @@ export async function DELETE(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: 'You cannot delete your own account' }, { status: 400 });
   }
 
-  const ok = await softDeleteUserById(id);
+  const ok = await deleteUserById(id);
   if (!ok) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
