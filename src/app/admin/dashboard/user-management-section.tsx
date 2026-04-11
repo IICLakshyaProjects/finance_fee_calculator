@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 
 import type { UserRole } from '@/lib/auth/types';
 
@@ -15,7 +15,7 @@ type PublicUser = {
 };
 
 const PAGE_SIZE = 10;
-const ALL_ROLES: UserRole[] = ['USER', 'SUB_ADMIN', 'ADMIN', 'SUPER_ADMIN'];
+const CREATE_USER_ROLES: UserRole[] = ['USER', 'ADMIN'];
 
 function PencilIcon() {
   return (
@@ -86,19 +86,6 @@ export function UserManagementSection() {
   const [formError, setFormError] = useState<string | null>(null);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  const roleOptions = useMemo(() => {
-    if (myRole === 'SUPER_ADMIN') {
-      return ALL_ROLES;
-    }
-    return ALL_ROLES.filter((r) => r !== 'SUPER_ADMIN');
-  }, [myRole]);
-
-  useEffect(() => {
-    if (myRole && myRole !== 'SUPER_ADMIN' && formRole === 'SUPER_ADMIN') {
-      setFormRole('ADMIN');
-    }
-  }, [myRole, formRole]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -195,16 +182,31 @@ export function UserManagementSection() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             email: formEmail.trim(),
-            password: formPassword,
             role: formRole,
           }),
         });
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          inviteSent?: boolean;
+          inviteLink?: string;
+        };
         if (!res.ok) {
-          setFormError(data.error ?? 'Could not create user');
+          if (res.status === 502 && data.inviteLink) {
+            setFormError(
+              `${data.error ?? 'Email failed'}\n\nCopy link for the user:\n${data.inviteLink}`
+            );
+          } else {
+            setFormError(data.error ?? 'Could not create user');
+          }
           return;
         }
-        setBanner({ type: 'ok', text: 'User created.' });
+        const okMsg =
+          data.inviteSent === true
+            ? 'User created. They will receive an email with a link to set their password.'
+            : data.inviteLink
+              ? `User created (SMTP not configured). Share this link: ${data.inviteLink}`
+              : 'User created.';
+        setBanner({ type: 'ok', text: okMsg });
         setModalOpen(false);
         if (page === 1) {
           await loadUsers({ silent: true });
@@ -261,7 +263,7 @@ export function UserManagementSection() {
   const onDelete = async (u: PublicUser) => {
     if (
       !window.confirm(
-        `Remove access for ${u.email}? They will be signed out and cannot sign in again until restored by a database change.`
+        `Permanently delete ${u.email}? This cannot be undone.`
       )
     ) {
       return;
@@ -295,7 +297,8 @@ export function UserManagementSection() {
             <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Administration</p>
             <h2 className="text-2xl font-semibold text-slate-900">User management</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Create accounts, assign roles, and deactivate users. Passwords are never shown after saving.
+              New users get an email with a one-time link to set their password. Edit users to change email or
+              optional password here.
             </p>
           </div>
           <button
@@ -460,24 +463,6 @@ export function UserManagementSection() {
                   </div>
                   <div>
                     <label
-                      htmlFor="um-password"
-                      className="block text-xs font-semibold uppercase tracking-wide text-slate-500"
-                    >
-                      Password
-                    </label>
-                    <input
-                      id="um-password"
-                      type="password"
-                      required
-                      minLength={8}
-                      value={formPassword}
-                      onChange={(e) => setFormPassword(e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                      autoComplete="new-password"
-                    />
-                  </div>
-                  <div>
-                    <label
                       htmlFor="um-role"
                       className="block text-xs font-semibold uppercase tracking-wide text-slate-500"
                     >
@@ -489,9 +474,9 @@ export function UserManagementSection() {
                       onChange={(e) => setFormRole(e.target.value as UserRole)}
                       className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                     >
-                      {roleOptions.map((r) => (
+                      {CREATE_USER_ROLES.map((r) => (
                         <option key={r} value={r}>
-                          {r}
+                          {r === 'USER' ? 'User' : 'Admin'}
                         </option>
                       ))}
                     </select>

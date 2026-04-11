@@ -238,7 +238,7 @@ export default function HomePage() {
           <button
             type="button"
             onClick={handleLogout}
-            className="text-sm font-medium text-slate-600 hover:text-slate-900"
+            className="text-sm font-medium text-red-600 hover:text-slate-900"
           >
             Sign out
           </button>
@@ -247,11 +247,7 @@ export default function HomePage() {
           <p className="text-sm font-semibold uppercase tracking-[0.4em] text-slate-500">
             Finance Fees
           </p>
-          <h1 className="text-4xl font-bold text-slate-900">Fee segregation that matches your rate card</h1>
-          <p className="text-slate-600">
-            Select a course, and we automatically show the Coaching, Admission, Student Experience,
-            Material, and GST breakdown along with the one-time payment total.
-          </p>
+          
         </header>
 
         <section className="rounded-3xl border border-slate-200 bg-white/80 p-6 shadow-lg shadow-slate-200/60 backdrop-blur">
@@ -318,12 +314,12 @@ export default function HomePage() {
             </div>
 
             {selectedEntry && totals && (
-              <div className="flex w-full flex-col gap-2 lg:max-w-xs lg:items-end lg:text-right">
+              <div className="w-full lg:max-w-xs">
                 <label
                   htmlFor="applicable-fee-input"
-                  className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400"
+                  className="block w-full text-left text-xs font-semibold uppercase tracking-[0.3em] text-slate-400"
                 >
-                  Applicable fee
+                  Current Total Fee as Per Class Pro
                 </label>
                 <input
                   id="applicable-fee-input"
@@ -331,12 +327,9 @@ export default function HomePage() {
                   min={0}
                   value={applicableInput}
                   onChange={handleApplicableChange}
-                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 lg:text-right"
+                  className="mt-2 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-left text-base text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
                 />
-                <p className="text-xs text-slate-500 lg:max-w-sm lg:text-right">
-                  Admission, Student Experience, and Material fees stay unchanged; the remaining amount
-                  is split between tuition and GST.
-                </p>
+            
               </div>
             )}
           </div>
@@ -475,7 +468,7 @@ export default function HomePage() {
                   <div className="mt-4 space-y-3 text-sm">
                     <div className="flex flex-col gap-1 border-b border-slate-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
                       <span className="text-slate-600">
-                        Discount (normal fee → applicable fee)
+                        Discount (normal fee → Current Total Fee)
                       </span>
                       <span className="font-semibold text-slate-900 tabular-nums">
                         {formatWithSymbol(discountNormalToApplicable)}
@@ -483,7 +476,7 @@ export default function HomePage() {
                     </div>
                     <div className="flex flex-col gap-1 border-b border-slate-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
                       <span className="text-slate-600">
-                        Discount (applicable fee → OTP fee)
+                        Discount (Current Total Fee → OTP fee)
                       </span>
                       <span className="font-semibold text-slate-900 tabular-nums">
                         {formatWithSymbol(discountApplicableToOtp)}

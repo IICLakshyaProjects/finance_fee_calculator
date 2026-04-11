@@ -4,6 +4,9 @@ import { FormEvent, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+import type { UserRole } from '@/lib/auth/types';
+import { isAdminRole } from '@/lib/auth/roles';
+
 function ResetPasswordForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -32,12 +35,17 @@ function ResetPasswordForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, password }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        role?: UserRole;
+      };
       if (!res.ok) {
         setError(data.error ?? 'Reset failed');
         return;
       }
-      router.replace('/auth/login');
+      const next =
+        data.role && isAdminRole(data.role) ? '/admin/login' : '/auth/login';
+      router.replace(next);
       router.refresh();
     } catch {
       setError('Network error');
@@ -107,7 +115,9 @@ export default function ResetPasswordPage() {
     <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200 px-4">
       <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white/90 p-8 shadow-lg">
         <h1 className="text-2xl font-bold text-slate-900">Set new password</h1>
-        <p className="mt-1 text-sm text-slate-600">Choose a password at least 8 characters.</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Choose a password (at least 8 characters). This link works once — after you save, it expires.
+        </p>
         <Suspense fallback={<p className="mt-6 text-sm text-slate-500">Loading…</p>}>
           <ResetPasswordForm />
         </Suspense>

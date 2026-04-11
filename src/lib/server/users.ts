@@ -263,15 +263,13 @@ export async function updateUserById(id: string, data: UpdateUserInput): Promise
   return r.rows[0] ? mapPublicUser(r.rows[0]) : null;
 }
 
-export async function softDeleteUserById(id: string): Promise<boolean> {
+/** Permanently removes the user row. `password_reset_tokens` rows cascade. */
+export async function deleteUserById(id: string): Promise<boolean> {
   if (!pool) {
     return false;
   }
   await ensureAuthTables();
-  const result = await pool.query(
-    `UPDATE users SET deleted_at = NOW(), status = 'INACTIVE' WHERE id = $1 AND deleted_at IS NULL`,
-    [id]
-  );
+  const result = await pool.query('DELETE FROM users WHERE id = $1', [id]);
   return (result.rowCount ?? 0) > 0;
 }
 
